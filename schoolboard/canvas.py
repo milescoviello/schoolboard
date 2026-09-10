@@ -130,6 +130,10 @@ _KIND = {
     "assessment_request": "peer review",
 }
 
+# Checkpointed discussions arrive as two items with an identical title and
+# different deadlines. The tag is the only thing that tells them apart.
+_CHECKPOINT = {"reply_to_topic": "initial post", "reply_to_entry": "reply to classmates"}
+
 
 def _is_done(entry):
     override = entry.get("planner_override") or {}
@@ -150,10 +154,13 @@ def normalise_planner(entries, labels, base_url):
         url = entry.get("html_url") or ""
         if url.startswith("/"):
             url = base_url.rstrip("/") + url
+        kind = _KIND.get(ptype, ptype)
+        if ptype == "sub_assignment":
+            kind = _CHECKPOINT.get(plannable.get("sub_assignment_tag"), "checkpoint")
         items.append({
             "id": f"canvas:{ptype}:{plannable.get('id') or entry.get('plannable_id')}",
             "source": "canvas",
-            "kind": _KIND.get(ptype, ptype),
+            "kind": kind,
             "course": labels.get(entry.get("course_id"), "Canvas"),
             "title": plannable.get("title") or plannable.get("name") or "(untitled)",
             "due_utc": due,

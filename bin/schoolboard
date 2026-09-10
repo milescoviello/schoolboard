@@ -42,9 +42,18 @@ def cmd_connect(args):
     cfg = config.load_config()
     base = cfg["canvas"]["base_url"]
     print(f"Canvas host: {base}")
-    print("Create a token: Canvas > Account > Settings > Approved Integrations >")
-    print("  '+ New Access Token'. Purpose: schoolboard. Leave expiry blank.")
-    token = args.token or input("\nPaste token: ").strip()
+    token = ""
+    if args.token_file:
+        # Preferred for an existing token: never lands in argv, so it stays out
+        # of `ps` output and shell history.
+        token = Path(args.token_file).read_text(encoding="utf-8").strip()
+        print(f"Reading token from {args.token_file}")
+    elif args.token:
+        token = args.token.strip()
+    else:
+        print("Create a token: Canvas > Account > Settings > Approved Integrations >")
+        print("  '+ New Access Token'. Purpose: schoolboard. Leave expiry blank.")
+        token = input("\nPaste token: ").strip()
     if not token:
         print("No token given; nothing changed.")
         return 1
@@ -90,7 +99,8 @@ def main():
     sub.add_parser("status", help="show configuration and sync state").set_defaults(func=cmd_status)
 
     p = sub.add_parser("connect", help="add a Canvas access token")
-    p.add_argument("--token")
+    p.add_argument("--token", help="token as a literal (visible in ps; prefer --token-file)")
+    p.add_argument("--token-file", help="read the token from a file")
     p.set_defaults(func=cmd_connect)
 
     args = parser.parse_args()
