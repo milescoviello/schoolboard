@@ -13,7 +13,7 @@ import threading
 import time
 import urllib.parse
 import traceback
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import auth, canvas, config, coursesite, ics, mail, notify, render, store, timetable
@@ -96,7 +96,7 @@ def _sync_note(conn, cfg):
     return f"synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
 
 
-def build_page():
+def build_page(week=None, focus_day=None):
     cfg = config.load_config()
     schedule = config.load_schedule()
     tz = timetable.tzinfo(cfg["timezone"])
@@ -104,17 +104,22 @@ def build_page():
     conn = store.connect()
     try:
         colours = render.colour_map(schedule)
-        tasks = render.render_tasks(store.upcoming(conn), now, tz, colours=colours)
+        tasks = render.render_tasks(store.upcoming(conn), now, tz, colours=colours,
+                                    horizon_days=cfg.get("due_soon_days", 10))
         anns = render.render_announcements(store.announcements(conn), now, tz)
         mails = render.render_mail(store.mail(conn), now, tz, colours=colours)
         grades = render.render_grades(store.get_meta(conn, "grades") or [], colours=colours)
         changed = render.render_changed(store.recently_changed(conn), now, tz)
         appts = render.render_appointments(store.appointments(conn), now, tz, colours=colours)
+        completed = render.render_completed(store.completed(conn), now, tz, colours=colours)
+        workload = store.workload(conn)
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
                        grades=grades, changed=changed, appts=appts,
+                       week=week, workload=workload, completed=completed,
+                       focus_day=focus_day,
                        canvas_ready=bool(cfg["canvas"]["token"]),
                        refresh=cfg["refresh_seconds"])
 
@@ -224,7 +229,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._to_login()
                 return
             if path in ("/", "/index.html"):
-                self._send(build_page())
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+
+                def as_date(key):
+                    raw = (query.get(key) or [""])[0]
+                    try:
+                        return date.fromisoformat(raw) if raw else None
+                    except ValueError:
+                        return None
+
+                focus = as_date("day")
+                week = as_date("week")
+                if week:
+                    week -= timedelta(days=week.weekday())
+                elif focus:
+                    week = focus - timedelta(days=focus.weekday())
+                self._send(build_page(week=week, focus_day=focus))
             elif path == "/sync":
                 self._send(f"<pre>{sync_once()}</pre><p><a href='/'>back</a></p>")
             elif path == "/manifest.webmanifest":

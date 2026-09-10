@@ -169,6 +169,35 @@ def mail(conn, limit=8):
         "ORDER BY done ASC, due_utc DESC LIMIT ?", (limit,)).fetchall()
 
 
+def on_day(conn, day_start_utc, day_end_utc, include_done=True):
+    """Everything owed on one calendar day, past or future."""
+    holes = ",".join("?" * len(NON_WORK_KINDS))
+    done_clause = "" if include_done else " AND done=0"
+    return conn.execute(
+        f"SELECT * FROM items WHERE kind NOT IN ({holes})"
+        f" AND due_utc >= ? AND due_utc < ?{done_clause} ORDER BY due_utc",
+        (*NON_WORK_KINDS, day_start_utc, day_end_utc)).fetchall()
+
+
+def completed(conn, limit=40):
+    """What has actually been finished — the past the board never showed."""
+    holes = ",".join("?" * len(NON_WORK_KINDS))
+    return conn.execute(
+        f"SELECT * FROM items WHERE done=1 AND kind NOT IN ({holes})"
+        f" AND due_utc IS NOT NULL ORDER BY due_utc DESC LIMIT ?",
+        (*NON_WORK_KINDS, limit)).fetchall()
+
+
+def workload(conn):
+    """{date -> [total, done]} for every dated item, for the term strip."""
+    holes = ",".join("?" * len(NON_WORK_KINDS))
+    rows = conn.execute(
+        f"SELECT substr(due_utc,1,10) d, COUNT(*) n, SUM(done) f FROM items "
+        f"WHERE kind NOT IN ({holes}) AND due_utc IS NOT NULL GROUP BY d",
+        NON_WORK_KINDS).fetchall()
+    return {r["d"]: (r["n"], r["f"] or 0) for r in rows}
+
+
 def announcements(conn, limit=8):
     return conn.execute(
         "SELECT * FROM items WHERE kind='announcement' "
