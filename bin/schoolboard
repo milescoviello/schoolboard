@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""schoolboard — one board for classes, assignments and announcements."""
+import argparse
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from schoolboard import canvas, config, server, store, timetable  # noqa: E402
+
+
+def cmd_serve(args):
+    server.serve(args.bind, args.port)
+
+
+def cmd_sync(args):
+    print(server.sync_once())
+
+
+def cmd_today(args):
+    cfg = config.load_config()
+    schedule = config.load_schedule()
+    tz = timetable.tzinfo(cfg["timezone"])
+    now = datetime.now(tz)
+    print(now.strftime("%A %B %-d, %Y — %-I:%M %p %Z"))
+    meetings = timetable.meetings_on(schedule, now.date(), tz)
+    if not meetings:
+        print("  no classes today")
+    for m in meetings:
+        mark = {"current": ">>", "past": "  ", "upcoming": " ·"}[m.status(now)]
+        print(f"  {mark} {m.start.strftime('%-I:%M'):>7}-{m.end.strftime('%-I:%M %p').lower():<9} "
+              f"{m.code:<10} {m.course['room']}")
+    cur, nxt = timetable.current_and_next(schedule, now, tz)
+    if cur:
+        print(f"\n  now: {cur.code} until {cur.end.strftime('%-I:%M %p').lower()}")
+    if nxt:
+        print(f"  next: {nxt.code} {nxt.start.strftime('%a %-I:%M %p').lower()} in {nxt.course['room']}")
+
+
+def cmd_connect(args):
+    cfg = config.load_config()
+    base = cfg["canvas"]["base_url"]
+    print(f"Canvas host: {base}")
+    print("Create a token: Canvas > Account > Settings > Approved Integrations >")
+    print("  '+ New Access Token'. Purpose: schoolboard. Leave expiry blank.")
+    token = args.token or input("\nPaste token: ").strip()
+    if not token:
+        print("No token given; nothing changed.")
+        return 1
+    try:
+        who = canvas.Canvas(base, token).profile()
+    except canvas.CanvasError as exc:
+        print(f"\nRejected: {exc}")
+        return 1
+    cfg["canvas"]["token"] = token
+    path = config.save_config(cfg)
+    print(f"\nConnected as {who.get('name')} <{who.get('primary_email','')}>")
+    print(f"Token saved to {path} (mode 600)")
+    print(server.sync_once())
+    return 0
+
+
+def cmd_status(args):
+    cfg = config.load_config()
+    conn = store.connect()
+    tz = timetable.tzinfo(cfg["timezone"])
+    print(f"timezone     {cfg['timezone']}  (now {datetime.now(tz).strftime('%-I:%M %p %Z')})")
+    print(f"host clock   {datetime.now().astimezone().strftime('%-I:%M %p %Z')}")
+    print(f"canvas       {'connected' if cfg['canvas']['token'] else 'NOT connected'}  {cfg['canvas']['base_url']}")
+    print(f"last sync    {store.get_meta(conn, 'last_sync') or 'never'}")
+    err = store.get_meta(conn, "last_sync_error")
+    if err:
+        print(f"last error   {err}")
+    counts = conn.execute("SELECT kind, COUNT(*) c FROM items GROUP BY kind").fetchall()
+    print("items        " + (", ".join(f"{r['c']} {r['kind']}" for r in counts) or "none"))
+    print(f"serving on   http://{cfg['bind']}:{cfg['port']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="schoolboard", description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("serve", help="run the web board")
+    p.add_argument("--bind"); p.add_argument("--port", type=int)
+    p.set_defaults(func=cmd_serve)
+
+    sub.add_parser("sync", help="pull Canvas once").set_defaults(func=cmd_sync)
+    sub.add_parser("today", help="print today's classes").set_defaults(func=cmd_today)
+    sub.add_parser("status", help="show configuration and sync state").set_defaults(func=cmd_status)
+
+    p = sub.add_parser("connect", help="add a Canvas access token")
+    p.add_argument("--token")
+    p.set_defaults(func=cmd_connect)
+
+    args = parser.parse_args()
+    sys.exit(args.func(args) or 0)
+
+
+if __name__ == "__main__":
+    main()
