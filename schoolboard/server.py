@@ -5,16 +5,17 @@ in the background. A failed sync never blanks the page — the last good data st
 on screen with an honest "last synced" line in the footer.
 """
 import fcntl
+import json
 import socket
 import struct
 import subprocess
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import canvas, config, mail, render, store, timetable
+from . import canvas, config, coursesite, mail, notify, render, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
@@ -37,6 +38,7 @@ def sync_once(cfg=None, schedule=None):
                 if report["notes"]:
                     note += " (" + "; ".join(report["notes"]) + ")"
                 parts.append(note)
+                store.set_meta(conn, "grades", report.get("grades") or [])
                 store.set_meta(conn, "last_sync_error", None)
             except canvas.CanvasError as exc:
                 store.set_meta(conn, "last_sync_error", str(exc))
@@ -49,9 +51,23 @@ def sync_once(cfg=None, schedule=None):
             store.upsert_items(conn, mail_items)
             parts.append(f"mail: {mail_report['relevant']} of "
                          f"{mail_report['scanned']} relevant")
+            store.set_meta(conn, "mail_dropped", mail_report.get("dropped", 0))
             store.set_meta(conn, "mail_generated_at", mail_report.get("generated_at"))
         else:
             parts.append("mail: no drop file yet")
+
+        # Course sites are static pages; no need to hit them every sync.
+        every = float(cfg.get("course_site_refresh_hours", 6)) * 3600
+        last_site = store.get_meta(conn, "course_site_at")
+        stale = True
+        if last_site:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(last_site)).total_seconds()
+            stale = age > every
+        if stale and cfg.get("course_sites"):
+            _, site_note = coursesite.refresh(cfg["course_sites"])
+            store.set_meta(conn, "course_site_at", datetime.now(timezone.utc).isoformat())
+            parts.append(f"sites: {site_note}")
 
         store.set_meta(conn, "last_sync", datetime.now().astimezone().isoformat())
         note = " · ".join(parts)
@@ -84,10 +100,13 @@ def build_page():
         tasks = render.render_tasks(store.upcoming(conn), now, tz)
         anns = render.render_announcements(store.announcements(conn), now, tz)
         mails = render.render_mail(store.mail(conn), now, tz)
+        grades = render.render_grades(store.get_meta(conn, "grades") or [])
+        changed = render.render_changed(store.recently_changed(conn), now, tz)
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
+                       grades=grades, changed=changed,
                        canvas_ready=bool(cfg["canvas"]["token"]),
                        refresh=cfg["refresh_seconds"])
 
@@ -114,12 +133,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(build_page())
             elif path == "/sync":
                 self._send(f"<pre>{sync_once()}</pre><p><a href='/'>back</a></p>")
+            elif path == "/manifest.webmanifest":
+                self._send(json.dumps({
+                    "name": "schoolboard", "short_name": "school",
+                    "start_url": "/", "display": "standalone",
+                    "background_color": "#16182A", "theme_color": "#16182A",
+                }), ctype="application/manifest+json")
             elif path == "/healthz":
                 self._send("ok", ctype="text/plain; charset=utf-8")
             else:
                 self._send("<h1>404</h1>", status=404)
         except Exception:
             self._send(f"<pre>{traceback.format_exc()}</pre>", status=500)
+
+
+def notify_once(cfg=None, schedule=None, force=False):
+    """One notification pass. Cheap enough to run every minute."""
+    cfg = cfg or config.load_config()
+    schedule = schedule or config.load_schedule()
+    tz = timetable.tzinfo(cfg["timezone"])
+    conn = store.connect()
+    try:
+        return notify.tick(conn, schedule, cfg, datetime.now(tz), tz, force=force)
+    finally:
+        conn.close()
+
+
+def _notify_loop():
+    """Every 60s. A class starting in 15 minutes cannot wait for a 15-min sync."""
+    while True:
+        try:
+            notify_once()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(60)
 
 
 def _sync_loop(interval_minutes):
@@ -182,6 +229,8 @@ def serve(bind=None, port=None):
     bind = bind or cfg["bind"]
     port = port or cfg["port"]
     threading.Thread(target=_sync_loop, args=(cfg["sync_minutes"],), daemon=True).start()
+    if cfg.get("notify", {}).get("enabled"):
+        threading.Thread(target=_notify_loop, daemon=True).start()
     print(f"schoolboard starting (timezone {cfg['timezone']})", flush=True)
     _listen(bind, port, "local")
     if cfg.get("bind_tailnet", True):

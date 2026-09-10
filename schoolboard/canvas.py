@@ -66,8 +66,10 @@ class Canvas:
         return self.get("users/self/profile")[0]
 
     def courses(self):
+        # total_scores brings the enrollment's current score back with the course,
+        # so grades cost no extra request.
         return self.get("courses", enrollment_state="active",
-                        include=["term"], state=["available"])
+                        include=["term", "total_scores"], state=["available"])
 
     def planner(self, days_back=7, days_ahead=45):
         now = datetime.now(timezone.utc)
@@ -197,6 +199,27 @@ def normalise_announcements(entries, labels, base_url):
     return items
 
 
+def grades(canvas_courses, labels):
+    """Current score per course, for the courses that report one."""
+    out = []
+    for course in canvas_courses:
+        for enrolment in course.get("enrollments") or []:
+            if enrolment.get("type") not in ("student", "StudentEnrollment"):
+                continue
+            score = enrolment.get("computed_current_score")
+            grade = enrolment.get("computed_current_grade")
+            if score is None and not grade:
+                continue
+            out.append({
+                "course": labels.get(course["id"], course.get("name")),
+                "score": score,
+                "grade": grade,
+            })
+            break
+    out.sort(key=lambda g: (g["score"] is None, g["score"] if g["score"] is not None else 0))
+    return out
+
+
 def collect(base_url, token, schedule):
     """Fetch everything and return normalised items plus a short sync report."""
     api = Canvas(base_url, token)
@@ -212,4 +235,5 @@ def collect(base_url, token, schedule):
         # Announcements are a bonus; never let them fail the whole sync.
         notes.append(f"announcements skipped: {exc}")
     return items, {"courses": len(courses), "planner": len(planner),
-                   "items": len(items), "notes": notes}
+                   "items": len(items), "notes": notes,
+                   "grades": grades(courses, labels)}

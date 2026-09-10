@@ -28,13 +28,29 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_due ON items(due_utc);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS notifications (
+    key      TEXT PRIMARY KEY,
+    sent_at  TEXT NOT NULL,
+    text     TEXT
+);
 """
+
+# Added after the first release, so they arrive by migration rather than in SCHEMA.
+MIGRATIONS = [
+    ("items", "prev_due_utc", "TEXT"),
+    ("items", "due_changed_at", "TEXT"),
+]
 
 
 def connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(items)")}
+    for table, column, coltype in MIGRATIONS:
+        if column not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+    conn.commit()
     return conn
 
 
@@ -53,15 +69,22 @@ def upsert_items(conn, items):
     now = _now()
     new = updated = 0
     for it in items:
-        cur = conn.execute("SELECT id FROM items WHERE id = ?", (it["id"],))
-        exists = cur.fetchone() is not None
-        if exists:
+        cur = conn.execute("SELECT due_utc FROM items WHERE id = ?", (it["id"],))
+        row = cur.fetchone()
+        if row is not None:
+            moved = row["due_utc"] != it.get("due_utc") and row["due_utc"] and it.get("due_utc")
             conn.execute(
                 """UPDATE items SET source=?, kind=?, course=?, title=?, due_utc=?,
                    url=?, done=?, body=?, last_seen=? WHERE id=?""",
                 (it["source"], it["kind"], it.get("course"), it["title"], it.get("due_utc"),
                  it.get("url"), int(it.get("done", 0)), it.get("body"), now, it["id"]),
             )
+            if moved:
+                # A deadline that quietly shifted looks identical to one already
+                # read, so record the old value rather than overwriting silently.
+                conn.execute(
+                    "UPDATE items SET prev_due_utc=?, due_changed_at=? WHERE id=?",
+                    (row["due_utc"], now, it["id"]))
             updated += 1
         else:
             conn.execute(
@@ -103,6 +126,18 @@ def undated(conn, limit=20):
     return conn.execute(
         "SELECT * FROM items WHERE done=0 AND due_utc IS NULL AND kind!='announcement' "
         "ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
+
+
+def recently_changed(conn, hours=36, limit=6):
+    """Work that is new or whose deadline moved, for the "what changed" strip."""
+    floor = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    holes = ",".join("?" * len(NON_WORK_KINDS))
+    return conn.execute(
+        f"SELECT *, (first_seen > ?) AS is_new FROM items "
+        f"WHERE done=0 AND kind NOT IN ({holes}) "
+        f"AND (first_seen > ? OR due_changed_at > ?) "
+        f"ORDER BY COALESCE(due_changed_at, first_seen) DESC LIMIT ?",
+        (floor, *NON_WORK_KINDS, floor, floor, limit)).fetchall()
 
 
 def mail(conn, limit=8):

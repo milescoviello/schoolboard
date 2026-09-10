@@ -23,6 +23,23 @@ DEFAULTS = {
     "sync_minutes": 15,
     "due_soon_days": 10,
     "canvas": {"base_url": "https://northeastern.instructure.com", "token": ""},
+    # Public course sites. The only source for per-class prep material — Canvas
+    # has the assignment, the site has what to read before Thursday.
+    "course_sites": [
+        {"course": "CS 2000", "url": "https://neu-pdi.github.io/cs2000-public-resources/"},
+    ],
+    "course_site_refresh_hours": 6,
+    "notify": {
+        "enabled": True,
+        # Reuses the bot the disc burner already set up. Home ntfy (.240) is
+        # unreachable from the dorm network, so Telegram is the only path out.
+        "telegram_env": "~/discburn/webhook.env",
+        "class_lead_minutes": 15,
+        "due_thresholds_hours": [24, 3],
+        "digest_hour": 8,
+        "quiet_start": 22,
+        "quiet_end": 7,
+    },
 }
 
 

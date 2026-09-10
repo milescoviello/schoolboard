@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from schoolboard import canvas, config, server, store, timetable  # noqa: E402
+from schoolboard import canvas, config, coursesite, notify, server, store, timetable  # noqa: E402
 
 
 def cmd_serve(args):
@@ -70,6 +70,30 @@ def cmd_connect(args):
     return 0
 
 
+def cmd_notify(args):
+    cfg = config.load_config()
+    if args.test:
+        env = notify.read_env(cfg.get("notify", {}).get("telegram_env"))
+        bot = notify.Telegram(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"))
+        ok, note = bot.send("<b>schoolboard</b>\nNotifications are wired up. "
+                            "You'll get a nudge before class and before deadlines.")
+        print("test message sent" if ok else f"test failed: {note}")
+        return 0 if ok else 1
+    print(server.notify_once(force=args.force))
+    return 0
+
+
+def cmd_sites(args):
+    cfg = config.load_config()
+    _, note = coursesite.refresh(cfg.get("course_sites"))
+    print(note)
+    from datetime import date as _d
+    today = _d.today()
+    for entry in coursesite.entries_for(today):
+        print(f"  today: {entry['course']} {entry['kind']} {entry['label']} {entry['url'] or ''}")
+    return 0
+
+
 def cmd_status(args):
     cfg = config.load_config()
     conn = store.connect()
@@ -83,6 +107,19 @@ def cmd_status(args):
         print(f"last error   {err}")
     counts = conn.execute("SELECT kind, COUNT(*) c FROM items GROUP BY kind").fetchall()
     print("items        " + (", ".join(f"{r['c']} {r['kind']}" for r in counts) or "none"))
+    nc = cfg.get("notify", {})
+    print(f"notify       {'on' if nc.get('enabled') else 'off'}  "
+          f"class -{nc.get('class_lead_minutes')}m, due {nc.get('due_thresholds_hours')}h, "
+          f"digest {nc.get('digest_hour')}:00, quiet {nc.get('quiet_start')}-{nc.get('quiet_end')}")
+    sent = conn.execute("SELECT COUNT(*) c FROM notifications").fetchone()["c"]
+    print(f"             {sent} notification keys recorded"
+          f"{'' if store.get_meta(conn, 'notify_primed') else ' (not primed yet)'}")
+    err = store.get_meta(conn, "notify_error")
+    if err:
+        print(f"notify error {err}")
+    grades = store.get_meta(conn, "grades") or []
+    print(f"grades       {len(grades)} courses reporting")
+    print(f"mail dropped {store.get_meta(conn, 'mail_dropped', 0)} (see mail-dropped.log)")
     print(f"serving on   http://{cfg['bind']}:{cfg['port']}")
 
 
@@ -97,6 +134,13 @@ def main():
     sub.add_parser("sync", help="pull Canvas once").set_defaults(func=cmd_sync)
     sub.add_parser("today", help="print today's classes").set_defaults(func=cmd_today)
     sub.add_parser("status", help="show configuration and sync state").set_defaults(func=cmd_status)
+
+    p = sub.add_parser("notify", help="run one notification pass")
+    p.add_argument("--test", action="store_true", help="send a test message now")
+    p.add_argument("--force", action="store_true", help="send even on the first (priming) run")
+    p.set_defaults(func=cmd_notify)
+
+    sub.add_parser("sites", help="refresh public course sites").set_defaults(func=cmd_sites)
 
     p = sub.add_parser("connect", help="add a Canvas access token")
     p.add_argument("--token", help="token as a literal (visible in ps; prefer --token-file)")

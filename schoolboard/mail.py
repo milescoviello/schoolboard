@@ -86,6 +86,7 @@ def collect(schedule, path=None, days=21):
     codes, names = build_matchers(schedule)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     items, kept, seen = [], 0, 0
+    dropped = []
     for message in data.get("messages", []):
         seen += 1
         received = message.get("received_at") or ""
@@ -99,6 +100,10 @@ def collect(schedule, path=None, days=21):
             continue
         course, reason = classify(message, codes, names)
         if not course:
+            # A false negative is otherwise invisible: an instructor mailing from
+            # an address with neither a course code nor their surname would just
+            # vanish. Write the rejects out so the filter can be audited.
+            dropped.append((when, message))
             continue
         kept += 1
         items.append({
@@ -114,10 +119,35 @@ def collect(schedule, path=None, days=21):
             "done": bool(message.get("is_read")),
             "body": (message.get("preview") or "")[:300],
         })
+    write_dropped_log(dropped)
     return items, {
         "available": True,
+        "dropped": len(dropped),
         "generated_at": data.get("generated_at"),
         "scanned": seen,
         "relevant": kept,
         "index_note": data.get("index_note"),
     }
+
+
+DROPPED_LOG = ROOT / "mail-dropped.log"
+
+
+def write_dropped_log(dropped, path=None):
+    """Snapshot of what the filter rejected, rewritten each sync.
+
+    Not appended: this is "what is currently being hidden", not a history.
+    """
+    path = Path(path) if path else DROPPED_LOG
+    lines = [f"# mail the filter dropped, as of {datetime.now(timezone.utc).isoformat()}",
+             "# if something here should be on the board, the matcher needs widening",
+             ""]
+    for when, message in sorted(dropped, key=lambda d: d[0], reverse=True):
+        unread = "UNREAD" if not message.get("is_read") else "read  "
+        lines.append(f"{when.astimezone().strftime('%Y-%m-%d %H:%M')}  {unread}  "
+                     f"{(message.get('from_address') or '')[:44]:<44}  "
+                     f"{(message.get('subject') or '')[:70]}")
+    try:
+        path.write_text("\n".join(lines) + "\n")
+    except OSError:
+        pass

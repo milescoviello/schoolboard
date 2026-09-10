@@ -15,7 +15,7 @@ is coloured, so colour always carries information.
 import html
 from datetime import date, datetime, timedelta, timezone
 
-from . import timetable
+from . import coursesite, timetable
 
 CSS = """
 :root {
@@ -60,6 +60,8 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
 .slot .where{margin-top:5px;font-size:16px}
 .slot .who{color:var(--muted);font-size:15px}
 .slot .flag{margin-top:6px;font-size:14px;color:var(--due)}
+.slot .prep{margin-top:5px;font-size:15px}
+.slot .prep a{color:var(--now);border-bottom:1px solid rgba(111,227,196,.35)}
 
 .slot.current{background:var(--raised);border-left:3px solid var(--now);
               margin-left:-22px;padding-left:39px;border-radius:0 4px 4px 0}
@@ -117,6 +119,17 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
 .mailrow.read{opacity:.6}
 .mailrow .head{font-size:16px;line-height:1.35}
 .mailrow .meta{color:var(--muted);font-size:14px;margin-top:2px}
+.grade{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:baseline;
+       padding:8px 0;border-bottom:1px solid var(--line)}
+.grade:last-child{border-bottom:0}
+.grade .c{font-size:16px}
+.grade .v{font-family:var(--figures);font-size:18px;font-variant-numeric:tabular-nums}
+.grade .g{color:var(--muted);font-size:14px;margin-left:6px}
+.changed{background:var(--raised);border-left:3px solid var(--now);border-radius:0 4px 4px 0;
+         padding:12px 15px;margin-bottom:20px}
+.changed .row{padding:4px 0;font-size:15px}
+.changed .tag{color:var(--now);font-size:13px;margin-right:7px}
+.changed .tag.moved{color:var(--due)}
 .ann{padding:10px 0;border-bottom:1px solid var(--line)}
 .ann:last-child{border-bottom:0}
 .ann .head{font-size:16px}
@@ -188,6 +201,13 @@ def _slot(meeting, now, today=None):
     state = meeting.status(now)
     course = meeting.course
     today = today or now.date()
+    site = ""
+    for entry in coursesite.entries_for(meeting.day, course["code"]):
+        if entry["kind"] in ("class", "lab"):
+            label = esc(entry["label"])
+            site = (f'<div class="prep"><a href="{esc(entry["url"])}">{label}</a></div>'
+                    if entry["url"] else f'<div class="prep">{label}</div>')
+            break
     flag = ""
     if course.get("note"):
         starts_on = course.get("starts_on")
@@ -199,6 +219,7 @@ def _slot(meeting, now, today=None):
   <div class="title">{esc(course['title'])}</div>
   <div class="where">{esc(course['room'])}</div>
   <div class="who">{esc(course['instructor'])}</div>
+  {site}
   {flag}
 </div>"""
 
@@ -332,7 +353,36 @@ def render_mail(rows, now, tz, limit=5):
     return "\n".join(out)
 
 
-def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails=""):
+def render_grades(rows):
+    out = []
+    for row in rows or []:
+        score = row.get("score")
+        value = f"{score:g}%" if isinstance(score, (int, float)) else "&mdash;"
+        letter = f'<span class="g">{esc(row.get("grade"))}</span>' if row.get("grade") else ""
+        out.append(f'<div class="grade"><div class="c">{esc(row.get("course"))}</div>'
+                   f'<div class="v">{value}{letter}</div></div>')
+    return "\n".join(out)
+
+
+def render_changed(rows, now, tz, limit=5):
+    """New work, and deadlines that moved since you last looked."""
+    out = []
+    for row in (rows or [])[:limit]:
+        due = parse_utc(row["due_utc"])
+        when = due_label(due.astimezone(tz), now) if due else "no date"
+        if row["is_new"]:
+            tag = '<span class="tag">new</span>'
+        else:
+            prev = parse_utc(row["prev_due_utc"])
+            was = f' (was {due_label(prev.astimezone(tz), now)})' if prev else ""
+            tag = f'<span class="tag moved">moved{esc(was)}</span>'
+        out.append(f'<div class="row">{tag}{esc(row["title"])} &mdash; '
+                   f'{esc(when)} <span style="color:var(--muted)">{esc(row["course"])}</span></div>')
+    return "\n".join(out)
+
+
+def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
+         grades="", changed=""):
     ahead_html, ahead_day = render_ahead(schedule, now, tz)
     skip = (ahead_day,) if ahead_day else ()
     online = timetable.online_courses(schedule)
@@ -356,11 +406,20 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     mail_block = ""
     if mails.strip():
         mail_block = f'<div class="week"><h2>Course mail</h2>{mails}</div>'
+    grade_block = ""
+    if grades.strip():
+        grade_block = f'<div class="week"><h2>Grades</h2>{grades}</div>'
+    changed_block = f'<div class="changed">{changed}</div>' if changed.strip() else "" 
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#16182A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="schoolboard">
+<link rel="manifest" href="/manifest.webmanifest">
 <meta http-equiv="refresh" content="{int(refresh)}">
 <title>{now.strftime('%A')} — schoolboard</title>
 <style>{CSS}</style>
@@ -389,9 +448,11 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
   </section>
   <section>
     <h2>Due soon</h2>
+    {changed_block}
     {work}
     {ann_block}
     {mail_block}
+    {grade_block}
   </section>
 </div>
 
