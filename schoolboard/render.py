@@ -28,6 +28,7 @@ primary device now, and falls back to Cantarell on the mini.
 Every time is computed in campus time, never the host clock, which is wrong.
 """
 import html
+import re
 from datetime import date, datetime, timedelta, timezone
 
 from . import coursesite, timetable
@@ -390,12 +391,13 @@ def day_chips(schedule, monday, tz, now, workload):
     out = []
     for offset in range(7):
         day = monday + timedelta(days=offset)
+        load = (workload.get(day.isoformat()) or (0, 0))[0]
         classes = ["chip"]
         if day == now.date():
             classes.append("today")
-        elif timetable.no_class_reason(schedule, day) or day.weekday() >= 5:
+        elif not load and (timetable.no_class_reason(schedule, day) or day.weekday() >= 5):
+            # Greying a Saturday that has two things due would be a lie.
             classes.append("off")
-        load = (workload.get(day.isoformat()) or (0, 0))[0]
         pips = "".join("<i></i>" for _ in range(min(load, 3)))
         out.append(f'<a class="{" ".join(classes)}" href="/?day={day.isoformat()}">'
                    f'<span class="w">{day.strftime("%a")}</span>'
@@ -404,11 +406,32 @@ def day_chips(schedule, monday, tz, now, workload):
     return f'<div class="days">{"".join(out)}</div>'
 
 
-def _row(minutes):
-    return int((minutes - GRID_START_MIN) // SLOT) + 1
+def grid_bounds(schedule, monday, tz):
+    """Fit the grid to the week actually shown.
+
+    A fixed 8-to-5 grid is mostly empty space; on a week whose first class is at
+    12:25 the reader scans four blank hours before reaching anything.
+    """
+    starts, ends = [], []
+    for offset in range(5):
+        for meeting in timetable.meetings_on(schedule, monday + timedelta(days=offset), tz):
+            starts.append(meeting.start.hour * 60 + meeting.start.minute)
+            ends.append(meeting.end.hour * 60 + meeting.end.minute)
+    if not starts:
+        return GRID_START_MIN, GRID_END_MIN
+    low = (min(starts) // 60) * 60
+    high = -(-max(ends) // 60) * 60
+    if high - low < 4 * 60:                 # keep it from looking like a sliver
+        high = low + 4 * 60
+    return low, high
+
+
+def _row(minutes, start_min):
+    return int((minutes - start_min) // SLOT) + 1
 
 
 def week_grid(schedule, monday, tz, colours, now):
+    low, high = grid_bounds(schedule, monday, tz)
     days = [monday + timedelta(days=i) for i in range(5)]
     head = ["<div></div>"]
     for day in days:
@@ -416,8 +439,8 @@ def week_grid(schedule, monday, tz, colours, now):
         head.append(f'<div class="{cls}">{day.strftime("%a")}<b>{day.day}</b></div>')
 
     cells = []
-    for hour in range(GRID_START_MIN // 60, GRID_END_MIN // 60):
-        row = _row(hour * 60)
+    for hour in range(low // 60, high // 60):
+        row = _row(hour * 60, low)
         label = datetime(2000, 1, 1, hour).strftime("%-I")
         cells.append(f'<div class="hr" style="grid-row:{row}/span 4">{label}</div>')
         for col in range(2, 7):
@@ -427,8 +450,8 @@ def week_grid(schedule, monday, tz, colours, now):
         for meeting in timetable.meetings_on(schedule, day, tz):
             start = meeting.start.hour * 60 + meeting.start.minute
             finish = meeting.end.hour * 60 + meeting.end.minute
-            row = max(1, _row(start))
-            span = max(2, _row(finish) - _row(start))
+            row = max(1, _row(start, low))
+            span = max(2, _row(finish, low) - _row(start, low))
             pair = colours.get(meeting.code, ("var(--mut)", "var(--sunk)"))
             gone = " gone" if meeting.end < now else ""
             cells.append(
@@ -443,7 +466,7 @@ def week_grid(schedule, monday, tz, colours, now):
             cells.append(f'<div class="nb" style="grid-row:{_row(minutes)}">'
                          f'<span class="n">{now.strftime("%-I:%M")}</span></div>')
 
-    rows = (GRID_END_MIN - GRID_START_MIN) // SLOT
+    rows = (high - low) // SLOT
     return (f'<div class="tt"><div class="tth">{"".join(head)}</div>'
             f'<div class="ttg" style="grid-template-rows:repeat({rows},15px)">'
             f'{"".join(cells)}</div></div>')
@@ -612,12 +635,26 @@ def render_announcements(rows, now, tz, limit=4):
     return "".join(out)
 
 
+def trim_subject(subject, course):
+    """Canvas mails arrive as "<subject>: <full course name>", so every row ends
+    in "CS2000 17144 Introduction to Program Design SEC 09 Fall 2026 [OAK-1-TR]"
+    when the course is already named underneath. Drop the repetition."""
+    if ": " not in subject:
+        return subject
+    head, _, tail = subject.rpartition(": ")
+    key = re.sub(r"[^A-Z0-9]", "", (course or "").upper())
+    blob = re.sub(r"[^A-Z0-9]", "", tail.upper())
+    if key and key in blob and len(head) > 8:
+        return head
+    return subject
+
+
 def render_mail(rows, now, tz, limit=5, colours=None):
     out = []
     for row in rows[:limit]:
         received = parse_utc(row["due_utc"])
         when = received.astimezone(tz).strftime("%-d %b") if received else ""
-        title = esc(row["title"])
+        title = esc(trim_subject(row["title"], row["course"]))
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'
         state = "read" if row["done"] else "unread"
