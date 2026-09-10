@@ -381,8 +381,22 @@ def render_changed(rows, now, tz, limit=5):
     return "\n".join(out)
 
 
+def render_appointments(rows, now, tz, limit=6):
+    out = []
+    for row in (rows or [])[:limit]:
+        when = parse_utc(row["due_utc"])
+        if not when:
+            continue
+        local = when.astimezone(tz)
+        where = f' <span class="course">{esc(row["body"])}</span>' if row["body"] else ""
+        out.append(f'<div class="task"><div class="due">{esc(due_label(local, now))}</div>'
+                   f'<div><div class="what">{esc(row["title"])}</div>'
+                   f'<div class="course">{esc(row["course"])}{where}</div></div></div>')
+    return "\n".join(out)
+
+
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
-         grades="", changed=""):
+         grades="", changed="", appts=""):
     ahead_html, ahead_day = render_ahead(schedule, now, tz)
     skip = (ahead_day,) if ahead_day else ()
     online = timetable.online_courses(schedule)
@@ -406,6 +420,9 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     mail_block = ""
     if mails.strip():
         mail_block = f'<div class="week"><h2>Course mail</h2>{mails}</div>'
+    appt_block = ""
+    if appts.strip():
+        appt_block = f'<div class="week"><h2>Calendar</h2>{appts}</div>'
     grade_block = ""
     if grades.strip():
         grade_block = f'<div class="week"><h2>Grades</h2>{grades}</div>'
@@ -450,6 +467,7 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     <h2>Due soon</h2>
     {changed_block}
     {work}
+    {appt_block}
     {ann_block}
     {mail_block}
     {grade_block}

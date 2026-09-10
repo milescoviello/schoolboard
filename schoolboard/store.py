@@ -61,7 +61,7 @@ def _now():
 # Kinds whose timestamp is an arrival time, not a deadline. Mixing these into
 # "Due soon" renders every one of them as overdue — it happened once with
 # announcements, so the rule is now explicit rather than a special case.
-NON_WORK_KINDS = ("announcement", "mail")
+NON_WORK_KINDS = ("announcement", "mail", "appointment")
 
 
 def upsert_items(conn, items):
@@ -138,6 +138,14 @@ def recently_changed(conn, hours=36, limit=6):
         f"AND (first_seen > ? OR due_changed_at > ?) "
         f"ORDER BY COALESCE(due_changed_at, first_seen) DESC LIMIT ?",
         (floor, *NON_WORK_KINDS, floor, floor, limit)).fetchall()
+
+
+def appointments(conn, limit=6):
+    """Upcoming calendar events from .ics feeds."""
+    now = datetime.now(timezone.utc).isoformat()
+    return conn.execute(
+        "SELECT * FROM items WHERE kind='appointment' AND due_utc > ? "
+        "ORDER BY due_utc ASC LIMIT ?", (now, limit)).fetchall()
 
 
 def mail(conn, limit=8):

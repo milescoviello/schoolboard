@@ -29,6 +29,10 @@ DEFAULTS = {
         {"course": "CS 2000", "url": "https://neu-pdi.github.io/cs2000-public-resources/"},
     ],
     "course_site_refresh_hours": 6,
+    # Graph calendar is blocked at the NU tenant (403, and consent is refused),
+    # so calendars arrive as published .ics URLs instead. Outlook: Settings >
+    # Calendar > Shared calendars > Publish a calendar > ICS link.
+    "ics_feeds": [],
     "notify": {
         "enabled": True,
         # Reuses the bot the disc burner already set up. Home ntfy (.240) is

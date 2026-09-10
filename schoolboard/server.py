@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import canvas, config, coursesite, mail, notify, render, store, timetable
+from . import canvas, config, coursesite, ics, mail, notify, render, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
@@ -55,6 +55,11 @@ def sync_once(cfg=None, schedule=None):
             store.set_meta(conn, "mail_generated_at", mail_report.get("generated_at"))
         else:
             parts.append("mail: no drop file yet")
+
+        if cfg.get("ics_feeds"):
+            ics_items, ics_note = ics.collect(cfg["ics_feeds"])
+            store.upsert_items(conn, ics_items)
+            parts.append(f"calendar: {ics_note}")
 
         # Course sites are static pages; no need to hit them every sync.
         every = float(cfg.get("course_site_refresh_hours", 6)) * 3600
@@ -102,11 +107,12 @@ def build_page():
         mails = render.render_mail(store.mail(conn), now, tz)
         grades = render.render_grades(store.get_meta(conn, "grades") or [])
         changed = render.render_changed(store.recently_changed(conn), now, tz)
+        appts = render.render_appointments(store.appointments(conn), now, tz)
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
-                       grades=grades, changed=changed,
+                       grades=grades, changed=changed, appts=appts,
                        canvas_ready=bool(cfg["canvas"]["token"]),
                        refresh=cfg["refresh_seconds"])
 
