@@ -103,7 +103,8 @@ def build_page():
     now = datetime.now(tz)
     conn = store.connect()
     try:
-        tasks = render.render_tasks(store.upcoming(conn), now, tz)
+        colours = render.colour_map(schedule)
+        tasks = render.render_tasks(store.upcoming(conn), now, tz, colours=colours)
         anns = render.render_announcements(store.announcements(conn), now, tz)
         mails = render.render_mail(store.mail(conn), now, tz)
         grades = render.render_grades(store.get_meta(conn, "grades") or [])

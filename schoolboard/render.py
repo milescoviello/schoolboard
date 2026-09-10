@@ -22,6 +22,10 @@ CSS = """
   --ground:#16182A; --raised:#1E2138; --line:#2E3252;
   --ink:#E8E9F5; --muted:#8D92B4;
   --now:#6FE3C4; --due:#FFB454; --late:#FF6B7A;
+  /* Course hues. Deliberately clear of the three signal colours above, so a
+     course colour can never be misread as "now", "due soon" or "overdue". */
+  --c0:#8AB4FF; --c1:#C6A2F0; --c2:#F09CC4; --c3:#A9D46B;
+  --c4:#79C8D6; --c5:#D69A7A; --c6:#9AA7D9;
   --names:Cantarell,"Noto Sans","DejaVu Sans",sans-serif;
   --figures:"DejaVu Sans",Cantarell,sans-serif;
 }
@@ -39,6 +43,19 @@ header{display:flex;align-items:baseline;justify-content:space-between;
 .clock{font-family:var(--figures);font-size:34px;font-variant-numeric:tabular-nums;
        letter-spacing:-0.01em}
 .place{color:var(--muted);font-size:15px;text-align:right;margin-top:2px}
+
+.hero{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
+      padding:16px 0 4px;border-bottom:1px solid var(--line)}
+.hero .lead{font-size:13px;color:var(--muted);letter-spacing:.06em;
+            text-transform:lowercase}
+.hero .what{font-size:29px;font-weight:700;letter-spacing:-0.02em}
+.hero .meta{font-size:17px;color:var(--muted)}
+.hero .count{margin-left:auto;font-family:var(--figures);font-size:17px;
+             font-variant-numeric:tabular-nums;color:var(--now)}
+.hero.idle .what{color:var(--muted);font-weight:400;font-size:20px}
+
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+     margin-right:7px;vertical-align:baseline;flex:none}
 
 .columns{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
          gap:40px;margin-top:26px;align-items:start}
@@ -95,7 +112,11 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
 .task.soon .due{color:var(--due)}
 .task.late .due{color:var(--late)}
 .task .what{font-size:17px;line-height:1.35}
-.task .course{color:var(--muted);font-size:14px;margin-top:2px}
+.task .course{color:var(--muted);font-size:14px;margin-top:3px}
+.daygroup{font-size:13px;color:var(--muted);letter-spacing:.05em;
+          padding:16px 0 5px;border-bottom:1px solid var(--line)}
+.daygroup:first-child{padding-top:2px}
+.daygroup.late{color:var(--late)}
 .task .kind{color:var(--muted)}
 
 .week{margin-top:34px}
@@ -155,6 +176,24 @@ footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);
 """
 
 
+COURSE_VARS = [f"var(--c{i})" for i in range(7)]
+
+
+def colour_map(schedule):
+    """Stable colour per course, assigned by position in the timetable.
+
+    Position rather than a hash: it keeps neighbouring courses visually apart
+    instead of relying on luck, and it never changes between renders.
+    """
+    return {c["code"]: COURSE_VARS[i % len(COURSE_VARS)]
+            for i, c in enumerate(schedule["courses"])}
+
+
+def dot(course, colours):
+    colour = colours.get(course)
+    return f'<span class="dot" style="background:{colour}"></span>' if colour else ""
+
+
 def esc(text):
     return html.escape(str(text or ""))
 
@@ -194,7 +233,7 @@ def urgency(due, now):
     return "soon" if (due - now) < timedelta(hours=48) else ""
 
 
-def _slot(meeting, now, today=None):
+def _slot(meeting, now, today=None, colours=None):
     """`now` positions the meeting in its own day; `today` is the real date.
 
     They differ in the look-ahead rail, which fakes `now` to the start of the day
@@ -217,7 +256,9 @@ def _slot(meeting, now, today=None):
         starts_on = course.get("starts_on")
         if not starts_on or date.fromisoformat(starts_on) >= today:
             flag = f'<div class="flag">{esc(course["note"])}</div>'
-    return f"""<div class="slot {state}">
+    tint = colours.get(course["code"]) if colours else None
+    accent = f' style="border-left:3px solid {tint};padding-left:19px;margin-left:-22px"' if tint and state != "current" else ""
+    return f"""<div class="slot {state}"{accent}>
   <div class="when">{meeting.start.strftime('%-I:%M')}<span class="end">{meeting.end.strftime('%-I:%M %p').lower()}</span></div>
   <div class="code">{esc(course['code'])}</div>
   <div class="title">{esc(course['title'])}</div>
@@ -252,7 +293,7 @@ def next_teaching_day(schedule, now, tz, limit=7):
     return None, []
 
 
-def render_ahead(schedule, now, tz):
+def render_ahead(schedule, now, tz, colours=None):
     """Rendered only once today is spent; otherwise it is noise.
 
     Returns (html, day_shown) so the week list below can avoid repeating it.
@@ -264,14 +305,46 @@ def render_ahead(schedule, now, tz):
     if not meetings:
         return "", None
     label = "Tomorrow" if day == (now.date() + timedelta(days=1)) else day.strftime("%A")
-    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1), today=now.date())
+    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1), today=now.date(), colours=colours)
                        for m in meetings)
     html_out = f'''<section class="ahead"><h2>{esc(label)} &mdash; {esc(day.strftime("%B %-d"))}</h2>
   <div class="rail">{slots}</div></section>'''
     return html_out, day
 
 
-def render_day(schedule, now, tz):
+def _gap(minutes):
+    if minutes < 60:
+        return f"in {minutes} min"
+    hours, rest = divmod(minutes, 60)
+    if hours < 24:
+        return f"in {hours}h {rest:02d}m" if rest else f"in {hours}h"
+    return f"in {hours // 24}d {hours % 24}h"
+
+
+def render_hero(schedule, now, tz, colours):
+    """The one line worth reading from across the room: where to be, and when."""
+    current, nxt = timetable.current_and_next(schedule, now, tz)
+    if current is not None:
+        left = int((current.end - now).total_seconds() // 60)
+        return (f'<div class="hero"><span class="lead">now</span>'
+                f'<span class="what">{dot(current.code, colours)}{esc(current.code)}</span>'
+                f'<span class="meta">{esc(current.course["room"])} &middot; '
+                f'until {current.end.strftime("%-I:%M %p").lower()}</span>'
+                f'<span class="count">{left} min left</span></div>')
+    if nxt is not None:
+        when = nxt.start.strftime("%-I:%M %p").lower()
+        if nxt.day != now.date():
+            when = f'{nxt.start.strftime("%A")} {when}'
+        return (f'<div class="hero"><span class="lead">next</span>'
+                f'<span class="what">{dot(nxt.code, colours)}{esc(nxt.code)}</span>'
+                f'<span class="meta">{esc(nxt.course["room"])} &middot; {esc(when)}</span>'
+                f'<span class="count">{esc(_gap(nxt.minutes_until(now)))}</span></div>')
+    reason = timetable.no_class_reason(schedule, now.date()) or "No more classes scheduled"
+    return (f'<div class="hero idle"><span class="lead">today</span>'
+            f'<span class="what">{esc(reason)}</span></div>')
+
+
+def render_day(schedule, now, tz, colours=None):
     meetings = timetable.meetings_on(schedule, now.date(), tz)
     current, nxt = timetable.current_and_next(schedule, now, tz)
     if not meetings:
@@ -285,19 +358,36 @@ def render_day(schedule, now, tz):
         if not placed and now < meeting.start:
             parts.append(_nowline(now, current, meeting))
             placed = True
-        parts.append(_slot(meeting, now))
+        parts.append(_slot(meeting, now, colours=colours))
     if not placed:
         parts.append(_nowline(now, current, None))
     return "\n".join(parts)
 
 
-def render_tasks(rows, now, tz, limit=12):
-    out = []
+def _day_heading(due_local, now):
+    if due_local.date() == now.date():
+        return "Today"
+    if due_local.date() == (now + timedelta(days=1)).date():
+        return "Tomorrow"
+    if (due_local.date() - now.date()).days < 7:
+        return due_local.strftime("%A")
+    return due_local.strftime("%A %-d %B")
+
+
+def render_tasks(rows, now, tz, limit=12, colours=None):
+    """Grouped by the day it is due — a flat list of twelve has no shape."""
+    colours = colours or {}
+    out, heading = [], None
     for row in rows[:limit]:
         due = parse_utc(row["due_utc"])
         if due is None:
             continue
         local = due.astimezone(tz)
+        group = _day_heading(local, now)
+        if group != heading:
+            heading = group
+            late = " late" if local < now else ""
+            out.append(f'<div class="daygroup{late}">{esc(group)}</div>')
         kind = row["kind"]
         kind_html = f' <span class="kind">{esc(kind)}</span>' if kind not in ("assignment",) else ""
         title = esc(row["title"])
@@ -306,7 +396,7 @@ def render_tasks(rows, now, tz, limit=12):
         out.append(f"""<div class="task {urgency(local, now)}">
   <div class="due">{esc(due_label(local, now))}</div>
   <div><div class="what">{title}{kind_html}</div>
-       <div class="course">{esc(row['course'])}</div></div>
+       <div class="course">{dot(row['course'], colours)}{esc(row['course'])}</div></div>
   <form method="post" action="/done">
     <input type="hidden" name="id" value="{esc(row['id'])}">
     <button class="tick" type="submit" title="Mark done">&#10003;</button>
@@ -315,14 +405,15 @@ def render_tasks(rows, now, tz, limit=12):
     return "\n".join(out)
 
 
-def render_week(schedule, now, tz, days=6, skip=()):
+def render_week(schedule, now, tz, days=6, skip=(), colours=None):
     rows = []
     for day, meetings in timetable.week_ahead(schedule, now, tz, days):
         if day in skip:
             continue
         if meetings:
             inner = " ".join(
-                f'<span>{esc(m.code)} <span class="at">{m.start.strftime("%-I:%M")}</span></span>'
+                f'<span>{dot(m.code, colours or {})}{esc(m.code)} '
+                f'<span class="at">{m.start.strftime("%-I:%M")}</span></span>'
                 for m in meetings)
             listing = f'<div class="list">{inner}</div>'
         else:
@@ -405,7 +496,8 @@ def render_appointments(rows, now, tz, limit=6):
 
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
          grades="", changed="", appts=""):
-    ahead_html, ahead_day = render_ahead(schedule, now, tz)
+    colours = colour_map(schedule)
+    ahead_html, ahead_day = render_ahead(schedule, now, tz, colours)
     skip = (ahead_day,) if ahead_day else ()
     online = timetable.online_courses(schedule)
     online_html = ""
@@ -460,14 +552,16 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
   </div>
 </header>
 
+{render_hero(schedule, now, tz, colours)}
+
 <div class="columns">
   <section>
     <h2>Today</h2>
-    <div class="rail">{render_day(schedule, now, tz)}</div>
+    <div class="rail">{render_day(schedule, now, tz, colours)}</div>
     {ahead_html}
     <div class="week">
       <h2>Rest of the week</h2>
-      {render_week(schedule, now, tz, skip=skip)}
+      {render_week(schedule, now, tz, skip=skip, colours=colours)}
       {online_html}
     </div>
   </section>

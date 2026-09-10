@@ -129,15 +129,29 @@ def undated(conn, limit=20):
 
 
 def recently_changed(conn, hours=36, limit=6):
-    """Work that is new or whose deadline moved, for the "what changed" strip."""
+    """Work that is new, or whose deadline moved, since you last looked.
+
+    "New" is measured against an explicit baseline rather than inferred from the
+    data: the first sync imports everything at once, and there is no reliable way
+    to tell that batch apart afterwards (mail and Canvas seeded 14 minutes apart,
+    which defeated a time-window guess). The baseline is stamped once, so the
+    strip starts empty and only ever reports genuine change.
+
+    A moved deadline is always reported — that is a change whenever it happens.
+    """
+    baseline = get_meta(conn, "changed_baseline")
+    if baseline is None:
+        baseline = datetime.now(timezone.utc).isoformat()
+        set_meta(conn, "changed_baseline", baseline)
     floor = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    new_floor = max(floor, baseline)
     holes = ",".join("?" * len(NON_WORK_KINDS))
     return conn.execute(
         f"SELECT *, (first_seen > ?) AS is_new FROM items "
         f"WHERE done=0 AND kind NOT IN ({holes}) "
         f"AND (first_seen > ? OR due_changed_at > ?) "
         f"ORDER BY COALESCE(due_changed_at, first_seen) DESC LIMIT ?",
-        (floor, *NON_WORK_KINDS, floor, floor, limit)).fetchall()
+        (new_floor, *NON_WORK_KINDS, new_floor, floor, limit)).fetchall()
 
 
 def appointments(conn, limit=6):
