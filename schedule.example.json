@@ -1,0 +1,41 @@
+{
+  "term": "Fall 2026",
+  "term_start": "2026-09-09",
+  "term_end": "2026-12-13",
+  "exam_start": "2026-12-14",
+  "exam_end": "2026-12-20",
+  "timezone": "America/Los_Angeles",
+  "campus": "Example University",
+  "residence": "",
+  "source": "Copy to schedule.json and fill in from your registrar. Not committed.",
+  "calendar_source": "Term dates and no-class days come from your university's academic calendar.",
+  "no_class_days": [
+    {"date": "2026-10-12", "name": "Indigenous Peoples Day"},
+    {"date": "2026-11-11", "name": "Veterans Day"},
+    {"date": "2026-11-25", "name": "Fall break"},
+    {"date": "2026-11-26", "name": "Fall break"},
+    {"date": "2026-11-27", "name": "Fall break"}
+  ],
+  "courses": [
+    {
+      "code": "CS 1000", "title": "Intro to Something",
+      "section": "01", "crn": "00000",
+      "days": ["Mon", "Wed"], "start": "10:00", "end": "11:40",
+      "room": "Main Hall 101", "instructor": "A. Lecturer"
+    },
+    {
+      "code": "CS 1001", "title": "Lab for CS 1000",
+      "section": "02", "crn": "00001",
+      "days": ["Thu"], "start": "14:00", "end": "15:40",
+      "room": "Main Hall 102", "instructor": "A. Lecturer",
+      "starts_on": "2026-09-17",
+      "note": "Optional: shown only until the first meeting."
+    },
+    {
+      "code": "GEN 1010", "title": "An Online Course",
+      "section": "03", "crn": "00002",
+      "days": [], "online": true,
+      "room": "Online", "instructor": "B. Instructor"
+    }
+  ]
+}
