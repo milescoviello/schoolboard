@@ -11,6 +11,7 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.parse
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -132,6 +133,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path != "/done":
+            self._send("<h1>404</h1>", status=404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8")
+        fields = urllib.parse.parse_qs(body)
+        item_id = (fields.get("id") or [""])[0]
+        undo = (fields.get("undo") or [""])[0] == "1"
+        try:
+            mark_item(item_id, done=not undo)
+        except Exception:
+            traceback.print_exc()
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.end_headers()
+
     def do_GET(self):
         path = self.path.split("?")[0]
         try:
@@ -151,6 +170,49 @@ class Handler(BaseHTTPRequestHandler):
                 self._send("<h1>404</h1>", status=404)
         except Exception:
             self._send(f"<pre>{traceback.format_exc()}</pre>", status=500)
+
+
+def mark_item(item_id, done=True, cfg=None):
+    """Mark one stored item complete, writing through to Canvas when possible.
+
+    Local-only is a fallback, not the goal: if the state lives solely in this
+    SQLite file it disappears the moment the database is rebuilt, and the Canvas
+    app keeps nagging.
+    """
+    cfg = cfg or config.load_config()
+    conn = store.connect()
+    try:
+        row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if row is None:
+            return False, f"no item {item_id}"
+        note = "locally"
+        parts = item_id.split(":")
+        if parts[0] == "canvas" and len(parts) >= 3 and cfg["canvas"]["token"]:
+            try:
+                canvas.set_complete(cfg["canvas"]["base_url"], cfg["canvas"]["token"],
+                                    parts[1], parts[2], complete=done)
+                note = "in Canvas"
+            except canvas.CanvasError as exc:
+                note = f"locally only ({exc})"
+        conn.execute("UPDATE items SET done=? WHERE id=?", (1 if done else 0, item_id))
+        conn.commit()
+        verb = "done" if done else "not done"
+        return True, f"{row['title']} marked {verb} {note}"
+    finally:
+        conn.close()
+
+
+def find_items(text, done=None):
+    conn = store.connect()
+    try:
+        sql = "SELECT * FROM items WHERE title LIKE ? AND kind NOT IN ('announcement','mail','appointment')"
+        args = [f"%{text}%"]
+        if done is not None:
+            sql += " AND done=?"
+            args.append(1 if done else 0)
+        return conn.execute(sql + " ORDER BY due_utc", args).fetchall()
+    finally:
+        conn.close()
 
 
 def notify_once(cfg=None, schedule=None, force=False):

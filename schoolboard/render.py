@@ -83,8 +83,12 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
 .empty{color:var(--muted);padding:14px 0 14px 22px;position:relative;font-size:17px}
 
 /* --- work --- */
-.task{display:grid;grid-template-columns:104px minmax(0,1fr);gap:14px;
-      padding:11px 0;border-bottom:1px solid var(--line)}
+.task{display:grid;grid-template-columns:104px minmax(0,1fr) auto;gap:14px;
+      padding:11px 0;border-bottom:1px solid var(--line);align-items:start}
+.tick{border:0;background:none;padding:4px 6px;cursor:pointer;color:var(--muted);
+      font:inherit;font-size:20px;line-height:1;border-radius:4px}
+.tick:hover{color:var(--now);background:var(--raised)}
+.tick:focus-visible{outline:2px solid var(--now);outline-offset:2px}
 .task:last-child{border-bottom:0}
 .task .due{font-family:var(--figures);font-size:15px;color:var(--muted);
            font-variant-numeric:tabular-nums;padding-top:1px}
@@ -303,6 +307,10 @@ def render_tasks(rows, now, tz, limit=12):
   <div class="due">{esc(due_label(local, now))}</div>
   <div><div class="what">{title}{kind_html}</div>
        <div class="course">{esc(row['course'])}</div></div>
+  <form method="post" action="/done">
+    <input type="hidden" name="id" value="{esc(row['id'])}">
+    <button class="tick" type="submit" title="Mark done">&#10003;</button>
+  </form>
 </div>""")
     return "\n".join(out)
 

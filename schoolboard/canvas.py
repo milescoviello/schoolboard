@@ -112,11 +112,17 @@ def course_labeller(canvas_courses, schedule):
     known = {_norm_code(c["code"]): c["code"] for c in schedule["courses"]}
     table = {}
     for course in canvas_courses:
-        blob = _norm_code(f"{course.get('course_code','')}{course.get('name','')}")
         label = course.get("course_code") or course.get("name") or f"Course {course['id']}"
-        for norm, pretty in known.items():
-            if norm and norm in blob:
-                label = pretty
+        # course_code FIRST, and only fall back to the name. "CS2001 Lab for
+        # CS2000 MERGED" contains both codes, so matching the name would label
+        # the CS 2001 lab as CS 2000.
+        for field in (course.get("course_code"), course.get("name")):
+            blob = _norm_code(field)
+            if not blob:
+                continue
+            hit = next((pretty for norm, pretty in known.items() if norm and norm in blob), None)
+            if hit:
+                label = hit
                 break
         table[course["id"]] = label
     return table
@@ -218,6 +224,60 @@ def grades(canvas_courses, labels):
             break
     out.sort(key=lambda g: (g["score"] is None, g["score"] if g["score"] is not None else 0))
     return out
+
+
+def set_complete(base_url, token, plannable_type, plannable_id, complete=True):
+    """Mark a planner item done in Canvas itself, not just locally.
+
+    Writing the override back means the state follows him into the Canvas app
+    and survives a rebuild of this database. `_is_done` already reads it.
+    """
+    api = Canvas(base_url, token)
+
+    # POST *creates* an override; a second one for the same item is rejected with
+    # 400 "has already been taken". So an existing override must be PUT, or undo
+    # silently never reaches Canvas and the next sync re-marks it done.
+    existing = None
+    try:
+        for override in api.get("planner/overrides"):
+            if (str(override.get("plannable_id")) == str(plannable_id)
+                    and override.get("plannable_type") == plannable_type):
+                existing = override.get("id")
+                break
+    except CanvasError:
+        existing = None
+
+    if existing:
+        url = f"{api.base}/api/v1/planner/overrides/{existing}"
+        method = "PUT"
+        payload = json.dumps({"marked_complete": bool(complete)}).encode()
+    else:
+        url = f"{api.base}/api/v1/planner/overrides"
+        method = "POST"
+        payload = json.dumps({
+            "plannable_type": plannable_type,
+            "plannable_id": int(plannable_id),
+            "marked_complete": bool(complete),
+        }).encode()
+
+    req = urllib.request.Request(url, data=payload, method=method, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=api.ctx) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")[:200]
+        except Exception:
+            pass
+        raise CanvasError(f"Canvas refused the update (HTTP {exc.code}) {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise CanvasError(f"Could not reach Canvas: {exc.reason}") from exc
 
 
 def collect(base_url, token, schedule):
