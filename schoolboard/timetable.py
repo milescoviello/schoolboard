@@ -35,12 +35,41 @@ class Meeting:
         return int((self.start - now).total_seconds() // 60)
 
 
+def _date(value):
+    return date.fromisoformat(value) if value else None
+
+
+def no_class_reason(schedule, day):
+    """Why `day` has no classes, or None if it is an ordinary teaching day.
+
+    Without this the board cheerfully shows classes on Veterans Day and right
+    through fall break — the schedule file alone has no idea the term ends.
+    Dates come from Northeastern's University-Wide Academic Calendar.
+    """
+    start, end = _date(schedule.get("term_start")), _date(schedule.get("term_end"))
+    exam_start, exam_end = _date(schedule.get("exam_start")), _date(schedule.get("exam_end"))
+    if start and day < start:
+        return f"{schedule.get('term', 'Term')} starts {start.strftime('%B %-d')}"
+    if end and day > end:
+        if exam_start and exam_end and exam_start <= day <= exam_end:
+            return "Final exam period"
+        if exam_end and day > exam_end:
+            return f"{schedule.get('term', 'Term')} is over"
+        return "Classes have ended"
+    for entry in schedule.get("no_class_days", []):
+        if entry.get("date") == day.isoformat():
+            return entry.get("name") or "No classes"
+    return None
+
+
 def meetings_on(schedule, day, tz):
     """Every class meeting on `day`, in start order.
 
     Honours per-course `starts_on`, which is why CS 1802 correctly shows nothing
     before 2026-09-16 even though it is nominally a Wednesday course.
     """
+    if no_class_reason(schedule, day):
+        return []
     weekday = DAY_NAMES[day.weekday()]
     out = []
     for course in schedule["courses"]:

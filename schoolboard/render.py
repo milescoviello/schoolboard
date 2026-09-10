@@ -13,7 +13,7 @@ thing each — mint is now, amber is approaching, coral is overdue. Nothing else
 is coloured, so colour always carries information.
 """
 import html
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import timetable
 
@@ -101,6 +101,7 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
 .day .dname{font-family:var(--figures);font-size:15px;color:var(--muted);
             font-variant-numeric:tabular-nums}
 .day .none{color:var(--muted);opacity:.6}
+.day .holiday{color:var(--due)}
 .day .list{font-size:16px}
 .day .list > span{display:inline-block;margin-right:18px;white-space:nowrap}
 .day .at{color:var(--muted);font-family:var(--figures);font-size:14px}
@@ -176,12 +177,22 @@ def urgency(due, now):
     return "soon" if (due - now) < timedelta(hours=48) else ""
 
 
-def _slot(meeting, now):
+def _slot(meeting, now, today=None):
+    """`now` positions the meeting in its own day; `today` is the real date.
+
+    They differ in the look-ahead rail, which fakes `now` to the start of the day
+    it is drawing. A start-date note is only worth showing while the course has
+    not started yet — otherwise "does not meet before Sept 11" turns up in
+    November.
+    """
     state = meeting.status(now)
     course = meeting.course
+    today = today or now.date()
     flag = ""
-    if course.get("note") and meeting.day == now.date():
-        flag = f'<div class="flag">{esc(course["note"])}</div>'
+    if course.get("note"):
+        starts_on = course.get("starts_on")
+        if not starts_on or date.fromisoformat(starts_on) >= today:
+            flag = f'<div class="flag">{esc(course["note"])}</div>'
     return f"""<div class="slot {state}">
   <div class="when">{meeting.start.strftime('%-I:%M')}<span class="end">{meeting.end.strftime('%-I:%M %p').lower()}</span></div>
   <div class="code">{esc(course['code'])}</div>
@@ -228,7 +239,8 @@ def render_ahead(schedule, now, tz):
     if not meetings:
         return "", None
     label = "Tomorrow" if day == (now.date() + timedelta(days=1)) else day.strftime("%A")
-    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1)) for m in meetings)
+    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1), today=now.date())
+                       for m in meetings)
     html_out = f'''<section class="ahead"><h2>{esc(label)} &mdash; {esc(day.strftime("%B %-d"))}</h2>
   <div class="rail">{slots}</div></section>'''
     return html_out, day
@@ -238,7 +250,9 @@ def render_day(schedule, now, tz):
     meetings = timetable.meetings_on(schedule, now.date(), tz)
     current, nxt = timetable.current_and_next(schedule, now, tz)
     if not meetings:
-        body = '<div class="empty">No classes today.</div>'
+        reason = timetable.no_class_reason(schedule, now.date())
+        text = f"{reason} &mdash; no classes." if reason else "No classes today."
+        body = f'<div class="empty">{text}</div>'
         return body + _nowline(now, None, nxt if nxt and nxt.day == now.date() else None)
     parts = []
     placed = False
@@ -283,7 +297,9 @@ def render_week(schedule, now, tz, days=6, skip=()):
                 for m in meetings)
             listing = f'<div class="list">{inner}</div>'
         else:
-            listing = '<div class="list none">clear</div>'
+            reason = timetable.no_class_reason(schedule, day)
+            listing = (f'<div class="list holiday">{esc(reason)}</div>' if reason
+                       else '<div class="list none">clear</div>')
         rows.append(f'<div class="day"><div class="dname">{day.strftime("%a %-d")}</div>{listing}</div>')
     return "\n".join(rows)
 
