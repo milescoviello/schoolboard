@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from schoolboard import canvas, config, coursesite, notify, server, store, timetable  # noqa: E402
+from schoolboard import auth, canvas, config, coursesite, notify, server, store, timetable  # noqa: E402
 
 
 def cmd_serve(args):
@@ -119,6 +119,33 @@ def cmd_undone(args):
     return _mark(args, False)
 
 
+def cmd_set_password(args):
+    """Password for the public URL only. The tailnet needs none — Tailscale has
+    already authenticated the caller."""
+    import getpass
+    import secrets
+    cfg = config.load_config()
+    if args.random:
+        words = ("harbor slate mango pylon cinder willow tundra basalt quartz "
+                 "meadow cobalt lantern").split()
+        password = "-".join(secrets.choice(words) for _ in range(4))
+        print(f"\nGenerated password:\n\n    {password}\n")
+    else:
+        password = args.password or getpass.getpass("New password: ")
+        if not password:
+            print("No password given; nothing changed.")
+            return 1
+        if len(password) < 8:
+            print("Use at least 8 characters.")
+            return 1
+    cfg.setdefault("auth", {})["password_hash"] = auth.hash_password(password)
+    auth.ensure_secret(cfg, config.save_config)
+    config.save_config(cfg)
+    print("Saved. Restart the service for it to take effect:")
+    print("  sudo service schoolboard restart")
+    return 0
+
+
 def cmd_status(args):
     cfg = config.load_config()
     conn = store.connect()
@@ -145,7 +172,9 @@ def cmd_status(args):
     grades = store.get_meta(conn, "grades") or []
     print(f"grades       {len(grades)} courses reporting")
     print(f"mail dropped {store.get_meta(conn, 'mail_dropped', 0)} (see mail-dropped.log)")
-    print(f"serving on   http://{cfg['bind']}:{cfg['port']}")
+    gated = "set" if (cfg.get("auth") or {}).get("password_hash") else "NOT SET (public URL is open)"
+    print(f"serving on   http://{cfg['bind']}:{cfg['port']} (trusted) "
+          f"+ 127.0.0.1:{cfg.get('public_port')} (public, login {gated})")
 
 
 def main():
@@ -166,6 +195,11 @@ def main():
         q.add_argument("text", help="part of the title")
         q.add_argument("--all", action="store_true", help="apply to every match")
         q.set_defaults(func=fn)
+
+    p = sub.add_parser("set-password", help="set the password for the public URL")
+    p.add_argument("--password")
+    p.add_argument("--random", action="store_true", help="generate a passphrase")
+    p.set_defaults(func=cmd_set_password)
 
     p = sub.add_parser("notify", help="run one notification pass")
     p.add_argument("--test", action="store_true", help="send a test message now")

@@ -16,6 +16,11 @@ DEFAULTS = {
     # Also listen on the tailnet address, so phone/laptop reach it by name or IP.
     # Never 0.0.0.0: the dorm /19 passes unicast between clients.
     "bind_tailnet": True,
+    # Second listener, localhost-only, that cloudflared alone talks to. Auth is
+    # decided by which socket accepted the connection — a listening socket is a
+    # fact, a forwarded-for header is only a claim.
+    "public_port": 8889,
+    "auth": {"password_hash": "", "session_secret": ""},
     # Never inherit the host clock. The mini has been sitting on America/New_York
     # while physically in Oakland, which is exactly how you miss a class.
     "timezone": "America/Los_Angeles",

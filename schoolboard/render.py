@@ -18,160 +18,185 @@ from datetime import date, datetime, timedelta, timezone
 from . import coursesite, timetable
 
 CSS = """
-:root {
-  --ground:#16182A; --raised:#1E2138; --line:#2E3252;
-  --ink:#E8E9F5; --muted:#8D92B4;
-  --now:#6FE3C4; --due:#FFB454; --late:#FF6B7A;
-  /* Course hues. Deliberately clear of the three signal colours above, so a
-     course colour can never be misread as "now", "due soon" or "overdue". */
-  --c0:#8AB4FF; --c1:#C6A2F0; --c2:#F09CC4; --c3:#A9D46B;
-  --c4:#79C8D6; --c5:#D69A7A; --c6:#9AA7D9;
+/* ---------------------------------------------------------------------------
+   Two surfaces, one layout: a phone held in one hand, and a screen read from
+   across a dorm room. Mobile-first single column; the desktop view widens the
+   same spine rather than inventing a second, unrelated arrangement.
+
+   Light and dark both ship, chosen by the device, because this gets looked at
+   in a bright room at 8am and a dark one at midnight.
+
+   Constraint throughout: Firefox on a 2009 GeForce 9400. No JS, no webfonts,
+   no shadows, no gradients, no transforms. Flat colour is free.
+--------------------------------------------------------------------------- */
+:root{
+  --ground:#0F1418; --raised:#161D22; --line:#25313A; --edge:#1B242B;
+  --ink:#EBF1F3; --muted:#8DA2AC;
+  --now:#2ED6A1; --due:#F0A03C; --late:#FF6E72;
+  --c0:#7FB2FF; --c1:#C79BF5; --c2:#F58FBF; --c3:#8FD46B;
+  --c4:#5FD0DA; --c5:#E0A46F; --c6:#9EA9E8;
   --names:Cantarell,"Noto Sans","DejaVu Sans",sans-serif;
   --figures:"DejaVu Sans",Cantarell,sans-serif;
+  --pad:20px;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --ground:#FBFAF7; --raised:#FFFFFF; --line:#E2DED6; --edge:#EEEAE3;
+    --ink:#131A1E; --muted:#5E6E76;
+    --now:#0E9E76; --due:#B4711A; --late:#C7343B;
+    --c0:#2F6DD0; --c1:#7B45C0; --c2:#C0407F; --c3:#3F8B2A;
+    --c4:#12808C; --c5:#9A5A20; --c6:#4A56B0;
+  }
 }
 *{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
 body{background:var(--ground);color:var(--ink);font-family:var(--names);
-     font-size:17px;line-height:1.45;padding:28px 32px 40px;
+     font-size:17px;line-height:1.45;padding:0 var(--pad) 56px;
      -moz-osx-font-smoothing:grayscale}
 a{color:inherit;text-decoration:none}
-a:focus-visible{outline:2px solid var(--now);outline-offset:3px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--now);outline-offset:3px}
+.num{font-family:var(--figures);font-variant-numeric:tabular-nums}
 
-header{display:flex;align-items:baseline;justify-content:space-between;
-       gap:24px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
-.today-name{font-size:38px;font-weight:700;letter-spacing:-0.02em;line-height:1.05}
-.today-date{color:var(--muted);font-size:19px;margin-top:2px}
-.clock{font-family:var(--figures);font-size:34px;font-variant-numeric:tabular-nums;
-       letter-spacing:-0.01em}
-.place{color:var(--muted);font-size:15px;text-align:right;margin-top:2px}
+/* --- masthead --- */
+header{padding:22px 0 14px}
+.daylabel{font-size:31px;font-weight:700;letter-spacing:-.02em;line-height:1.05}
+.subhead{color:var(--muted);font-size:15px;margin-top:3px}
+.clock{font-family:var(--figures);font-size:31px;font-variant-numeric:tabular-nums;
+       letter-spacing:-.01em;line-height:1}
+.place{color:var(--muted);font-size:13px;margin-top:2px}
+.masthead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.masthead .right{text-align:right;flex:none}
 
-.hero{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
-      padding:16px 0 4px;border-bottom:1px solid var(--line)}
-.hero .lead{font-size:13px;color:var(--muted);letter-spacing:.06em;
-            text-transform:lowercase}
-.hero .what{font-size:29px;font-weight:700;letter-spacing:-0.02em}
-.hero .meta{font-size:17px;color:var(--muted)}
-.hero .count{margin-left:auto;font-family:var(--figures);font-size:17px;
-             font-variant-numeric:tabular-nums;color:var(--now)}
-.hero.idle .what{color:var(--muted);font-weight:400;font-size:20px}
+/* --- the now/next band: the one thing readable across a room --- */
+.band{background:var(--raised);border:1px solid var(--line);border-radius:14px;
+      padding:15px 17px;margin-bottom:22px}
+.band .lead{font-size:12px;color:var(--muted);letter-spacing:.09em}
+.band .headline{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:4px}
+.band .code{font-size:27px;font-weight:700;letter-spacing:-.02em}
+.band .where{font-size:16px;color:var(--muted)}
+.band .count{margin-top:6px;font-family:var(--figures);font-size:16px;color:var(--now)}
+.band.idle .code{font-size:19px;font-weight:400;color:var(--muted)}
 
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;
-     margin-right:7px;vertical-align:baseline;flex:none}
+h2{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.09em;
+   padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+section{margin-bottom:30px}
 
-.columns{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
-         gap:40px;margin-top:26px;align-items:start}
-h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
-
-/* --- the day, as a rail --- */
-.rail{position:relative;padding-left:96px}
-.rail::before{content:"";position:absolute;left:88px;top:6px;bottom:6px;
-              width:1px;background:var(--line)}
-.slot{position:relative;padding:12px 0 12px 22px;min-height:56px}
-.slot .when{position:absolute;left:-96px;width:74px;text-align:right;
-            font-family:var(--figures);font-variant-numeric:tabular-nums;
-            font-size:18px;line-height:1.25}
-.slot .when .end{display:block;font-size:14px;color:var(--muted)}
-.slot::before{content:"";position:absolute;left:-9px;top:20px;width:11px;height:11px;
-              border-radius:50%;background:var(--ground);border:2px solid var(--line)}
-.slot .code{font-size:26px;font-weight:700;letter-spacing:-0.015em}
-.slot .title{color:var(--muted);font-size:16px}
+/* --- today, as a spine --- */
+.rail{position:relative}
+.slot{position:relative;display:grid;grid-template-columns:68px minmax(0,1fr);
+      gap:14px;padding:14px 0;border-bottom:1px solid var(--edge)}
+.slot:last-child{border-bottom:0}
+.slot .when{font-family:var(--figures);font-variant-numeric:tabular-nums;
+            font-size:17px;line-height:1.2;padding-top:2px}
+.slot .when .end{display:block;font-size:13px;color:var(--muted);margin-top:2px;white-space:nowrap}
+.slot .body{border-left:3px solid var(--edge);padding-left:14px}
+.slot .code{font-size:21px;font-weight:700;letter-spacing:-.01em}
+.slot .title{color:var(--muted);font-size:15px}
 .slot .where{margin-top:5px;font-size:16px}
-.slot .who{color:var(--muted);font-size:15px}
+.slot .who{color:var(--muted);font-size:14px}
+.slot .prep{margin-top:6px;font-size:15px}
+.slot .prep a{color:var(--now);border-bottom:1px solid currentColor;padding-bottom:1px}
 .slot .flag{margin-top:6px;font-size:14px;color:var(--due)}
-.slot .prep{margin-top:5px;font-size:15px}
-.slot .prep a{color:var(--now);border-bottom:1px solid rgba(111,227,196,.35)}
-
-.slot.current{background:var(--raised);border-left:3px solid var(--now);
-              margin-left:-22px;padding-left:39px;border-radius:0 4px 4px 0}
-.slot.current::before{border-color:var(--now);background:var(--now)}
+.slot.past{opacity:.45}
+.slot.current .body{border-left-color:var(--now)}
 .slot.current .code{color:var(--now)}
-.slot.past{opacity:.42}
 
-.nowline{position:relative;height:0;margin:2px 0}
-.nowline::before{content:"";position:absolute;left:-14px;top:-5px;width:11px;height:11px;
-                 border-radius:50%;background:var(--now)}
-.nowline::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;
-                background:var(--now);opacity:.5}
-.nowlabel{position:absolute;left:-96px;width:74px;text-align:right;top:-11px;
-          font-family:var(--figures);font-variant-numeric:tabular-nums;
-          font-size:15px;color:var(--now)}
-.nowtext{position:absolute;right:0;top:-11px;font-size:14px;color:var(--now);
-         background:var(--ground);padding-left:10px;z-index:2}
-
-.empty{color:var(--muted);padding:14px 0 14px 22px;position:relative;font-size:17px}
+.nowline{display:grid;grid-template-columns:68px minmax(0,1fr);gap:14px;
+         align-items:center;padding:7px 0}
+.nowline .t{font-family:var(--figures);font-size:14px;color:var(--now);
+            font-variant-numeric:tabular-nums}
+.nowline .bar{display:flex;align-items:center;gap:9px;color:var(--now);font-size:14px}
+.nowline .bar::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;
+                      background:var(--now)}
+.empty{color:var(--muted);padding:14px 0;font-size:16px}
 
 /* --- work --- */
-.task{display:grid;grid-template-columns:104px minmax(0,1fr) auto;gap:14px;
-      padding:11px 0;border-bottom:1px solid var(--line);align-items:start}
-.tick{border:0;background:none;padding:4px 6px;cursor:pointer;color:var(--muted);
-      font:inherit;font-size:20px;line-height:1;border-radius:4px}
-.tick:hover{color:var(--now);background:var(--raised)}
-.tick:focus-visible{outline:2px solid var(--now);outline-offset:2px}
-.task:last-child{border-bottom:0}
-.task .due{font-family:var(--figures);font-size:15px;color:var(--muted);
-           font-variant-numeric:tabular-nums;padding-top:1px}
-.task.soon .due{color:var(--due)}
-.task.late .due{color:var(--late)}
-.task .what{font-size:17px;line-height:1.35}
-.task .course{color:var(--muted);font-size:14px;margin-top:3px}
-.daygroup{font-size:13px;color:var(--muted);letter-spacing:.05em;
-          padding:16px 0 5px;border-bottom:1px solid var(--line)}
-.daygroup:first-child{padding-top:2px}
+.daygroup{font-size:12px;color:var(--muted);letter-spacing:.06em;
+          padding:18px 0 6px;border-bottom:1px solid var(--edge)}
+.daygroup:first-child{padding-top:4px}
 .daygroup.late{color:var(--late)}
+.task{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:10px;
+      align-items:center;padding:12px 0;border-bottom:1px solid var(--edge)}
+.task:last-child{border-bottom:0}
+.task .what{font-size:16px;line-height:1.35}
 .task .kind{color:var(--muted)}
+.task .meta{color:var(--muted);font-size:13px;margin-top:3px;
+            display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.task .at{font-family:var(--figures);font-variant-numeric:tabular-nums}
+.task.soon .at{color:var(--due)}
+.task.late .at{color:var(--late)}
+.tick{border:1px solid var(--line);background:none;color:var(--muted);
+      width:42px;height:42px;border-radius:11px;font-size:19px;line-height:1;
+      cursor:pointer;font-family:inherit}
+.tick:hover{color:var(--now);border-color:var(--now)}
 
-.week{margin-top:34px}
-.ahead{margin-top:30px}
-.ahead .rail .slot{min-height:auto;padding:9px 0 9px 22px}
-.day{display:grid;grid-template-columns:64px minmax(0,1fr);gap:14px;
-     padding:9px 0;border-bottom:1px solid var(--line)}
-.day:last-child{border-bottom:0}
-.day .dname{font-family:var(--figures);font-size:15px;color:var(--muted);
-            font-variant-numeric:tabular-nums}
-.day .none{color:var(--muted);opacity:.6}
-.day .holiday{color:var(--due)}
-.day .list{font-size:16px}
-.day .list > span{display:inline-block;margin-right:18px;white-space:nowrap}
-.day .at{color:var(--muted);font-family:var(--figures);font-size:14px}
-
-.notice{background:var(--raised);border-left:3px solid var(--due);
-        padding:14px 16px;border-radius:0 4px 4px 0;margin-bottom:20px;font-size:16px}
-.notice code{font-family:var(--figures);background:var(--ground);
-             padding:1px 6px;border-radius:3px;font-size:14px}
-.mailrow{padding:10px 0 10px 17px;border-bottom:1px solid var(--line);position:relative}
-.mailrow:last-child{border-bottom:0}
-.mailrow.unread::before{content:"";position:absolute;left:0;top:17px;width:7px;height:7px;
-                        border-radius:50%;background:var(--now)}
-.mailrow.read{opacity:.6}
-.mailrow .head{font-size:16px;line-height:1.35}
-.mailrow .meta{color:var(--muted);font-size:14px;margin-top:2px}
-.grade{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:baseline;
-       padding:8px 0;border-bottom:1px solid var(--line)}
-.grade:last-child{border-bottom:0}
-.grade .c{font-size:16px}
-.grade .v{font-family:var(--figures);font-size:18px;font-variant-numeric:tabular-nums}
-.grade .g{color:var(--muted);font-size:14px;margin-left:6px}
-.changed{background:var(--raised);border-left:3px solid var(--now);border-radius:0 4px 4px 0;
-         padding:12px 15px;margin-bottom:20px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.notice{background:var(--raised);border:1px solid var(--line);border-left:3px solid var(--due);
+        padding:14px 16px;border-radius:12px;font-size:15px;line-height:1.5}
+.notice code{font-family:var(--figures);background:var(--ground);padding:1px 6px;
+             border-radius:5px;font-size:13px}
+.changed{background:var(--raised);border:1px solid var(--line);border-radius:12px;
+         padding:12px 15px;margin-bottom:14px}
 .changed .row{padding:4px 0;font-size:15px}
-.changed .tag{color:var(--now);font-size:13px;margin-right:7px}
+.changed .tag{color:var(--now);font-size:12px;letter-spacing:.06em;margin-right:8px}
 .changed .tag.moved{color:var(--due)}
-.ann{padding:10px 0;border-bottom:1px solid var(--line)}
-.ann:last-child{border-bottom:0}
-.ann .head{font-size:16px}
-.ann .meta{color:var(--muted);font-size:14px;margin-top:2px}
 
-footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);
-       color:var(--muted);font-size:14px;display:flex;justify-content:space-between;
-       gap:16px;flex-wrap:wrap}
+/* --- week --- */
+.day{display:grid;grid-template-columns:58px minmax(0,1fr);gap:12px;
+     padding:11px 0;border-bottom:1px solid var(--edge);align-items:baseline}
+.day:last-child{border-bottom:0}
+.day .dname{font-family:var(--figures);font-size:14px;color:var(--muted)}
+.day .list{font-size:15px;display:flex;flex-wrap:wrap;gap:6px 16px}
+.day .list > span{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.day .at{color:var(--muted);font-family:var(--figures);font-size:13px}
+.day .none{color:var(--muted);opacity:.65}
+.day .holiday{color:var(--due)}
 
-@media (max-width:900px){
-  body{padding:20px 18px 32px;font-size:16px}
-  .columns{grid-template-columns:1fr;gap:30px}
-  .today-name{font-size:30px}.clock{font-size:28px}
-  .rail{padding-left:74px}.rail::before{left:66px}
-  .slot .when,.nowlabel{left:-74px;width:56px}
-  .slot.current{margin-left:-22px;padding-left:39px}
+/* --- lists --- */
+.row{padding:11px 0;border-bottom:1px solid var(--edge)}
+.row:last-child{border-bottom:0}
+.row .head{font-size:15px;line-height:1.4}
+.row .meta{color:var(--muted);font-size:13px;margin-top:3px;
+           display:flex;align-items:center;gap:7px}
+.row.unread .head{font-weight:700}
+.row.read{opacity:.62}
+.grade{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+       padding:10px 0;border-bottom:1px solid var(--edge)}
+.grade:last-child{border-bottom:0}
+.grade .v{font-family:var(--figures);font-size:17px;font-variant-numeric:tabular-nums}
+.grade .g{color:var(--muted);font-size:13px;margin-left:6px}
+
+footer{color:var(--muted);font-size:12px;padding-top:16px;border-top:1px solid var(--line);
+       display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+
+/* --- login --- */
+.gate{max-width:340px;margin:16vh auto 0}
+.gate h1{font-size:26px;font-weight:700;letter-spacing:-.02em}
+.gate p{color:var(--muted);font-size:15px;margin:6px 0 22px}
+.gate input{width:100%;font:inherit;font-size:17px;padding:14px 15px;
+            border:1px solid var(--line);border-radius:12px;
+            background:var(--raised);color:var(--ink)}
+.gate input:focus{outline:2px solid var(--now);outline-offset:1px}
+.gate button{width:100%;margin-top:12px;font:inherit;font-size:17px;font-weight:700;
+             padding:14px;border:0;border-radius:12px;background:var(--now);
+             color:var(--ground);cursor:pointer}
+.gate .err{color:var(--late);font-size:15px;margin-bottom:14px}
+
+/* --- desktop: widen the same spine, do not invent a new layout --- */
+@media (min-width:960px){
+  :root{--pad:38px}
+  body{font-size:17px}
+  .daylabel{font-size:42px}
+  .clock{font-size:38px}
+  .band{padding:18px 22px}
+  .band .code{font-size:32px}
+  .columns{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
+           gap:44px;align-items:start}
+  .slot{grid-template-columns:74px minmax(0,1fr)}
+  .nowline{grid-template-columns:74px minmax(0,1fr)}
+  .slot .code{font-size:24px}
 }
+@media (min-width:1400px){ body{max-width:1440px;margin:0 auto} }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """
 
@@ -182,15 +207,15 @@ COURSE_VARS = [f"var(--c{i})" for i in range(7)]
 def colour_map(schedule):
     """Stable colour per course, assigned by position in the timetable.
 
-    Position rather than a hash: it keeps neighbouring courses visually apart
-    instead of relying on luck, and it never changes between renders.
+    Position rather than a hash: neighbouring courses stay visually apart by
+    construction, and the mapping never shifts between renders.
     """
     return {c["code"]: COURSE_VARS[i % len(COURSE_VARS)]
             for i, c in enumerate(schedule["courses"])}
 
 
 def dot(course, colours):
-    colour = colours.get(course)
+    colour = (colours or {}).get(course)
     return f'<span class="dot" style="background:{colour}"></span>' if colour else ""
 
 
@@ -210,7 +235,7 @@ def parse_utc(value):
 
 
 def due_label(due, now):
-    """Short, human, and unambiguous about the day."""
+    """Short, human, and never ambiguous about which day."""
     delta = due - now
     mins = int(delta.total_seconds() // 60)
     if mins < 0:
@@ -218,12 +243,13 @@ def due_label(due, now):
         if days == 0:
             return f"{-mins // 60}h late" if mins < -60 else f"{-mins}m late"
         return f"{days}d late"
+    clock = due.strftime("%-I:%M %p").lower()
     if due.date() == now.date():
-        return f"today {due.strftime('%-I:%M %p').lower()}"
+        return clock
     if due.date() == (now + timedelta(days=1)).date():
-        return f"tomorrow {due.strftime('%-I:%M %p').lower()}"
+        return clock
     if delta.days < 7:
-        return f"{due.strftime('%a')} {due.strftime('%-I:%M %p').lower()}"
+        return f"{due.strftime('%a')} {clock}"
     return due.strftime("%b %-d")
 
 
@@ -231,85 +257,6 @@ def urgency(due, now):
     if due < now:
         return "late"
     return "soon" if (due - now) < timedelta(hours=48) else ""
-
-
-def _slot(meeting, now, today=None, colours=None):
-    """`now` positions the meeting in its own day; `today` is the real date.
-
-    They differ in the look-ahead rail, which fakes `now` to the start of the day
-    it is drawing. A start-date note is only worth showing while the course has
-    not started yet — otherwise "does not meet before Sept 11" turns up in
-    November.
-    """
-    state = meeting.status(now)
-    course = meeting.course
-    today = today or now.date()
-    site = ""
-    for entry in coursesite.entries_for(meeting.day, course["code"]):
-        if entry["kind"] in ("class", "lab"):
-            label = esc(entry["label"])
-            site = (f'<div class="prep"><a href="{esc(entry["url"])}">{label}</a></div>'
-                    if entry["url"] else f'<div class="prep">{label}</div>')
-            break
-    flag = ""
-    if course.get("note"):
-        starts_on = course.get("starts_on")
-        if not starts_on or date.fromisoformat(starts_on) >= today:
-            flag = f'<div class="flag">{esc(course["note"])}</div>'
-    tint = colours.get(course["code"]) if colours else None
-    accent = f' style="border-left:3px solid {tint};padding-left:19px;margin-left:-22px"' if tint and state != "current" else ""
-    return f"""<div class="slot {state}"{accent}>
-  <div class="when">{meeting.start.strftime('%-I:%M')}<span class="end">{meeting.end.strftime('%-I:%M %p').lower()}</span></div>
-  <div class="code">{esc(course['code'])}</div>
-  <div class="title">{esc(course['title'])}</div>
-  <div class="where">{esc(course['room'])}</div>
-  <div class="who">{esc(course['instructor'])}</div>
-  {site}
-  {flag}
-</div>"""
-
-
-def _nowline(now, current, nxt):
-    if current is not None:
-        left = int((current.end - now).total_seconds() // 60)
-        text = f"{left} min left" if left > 0 else "ending"
-    elif nxt is not None and nxt.day == now.date():
-        gap = nxt.minutes_until(now)
-        text = f"{gap // 60}h {gap % 60}m until {nxt.code}" if gap >= 60 else f"{gap} min until {nxt.code}"
-    else:
-        text = "nothing else today"
-    return (f'<div class="nowline"><span class="nowlabel">{now.strftime("%-I:%M")}</span>'
-            f'<span class="nowtext">{esc(text)}</span></div>')
-
-
-def next_teaching_day(schedule, now, tz, limit=7):
-    """The next day that actually has a class, so an evening glance is useful."""
-    from datetime import timedelta as _td
-    for offset in range(1, limit + 1):
-        day = now.date() + _td(days=offset)
-        meetings = timetable.meetings_on(schedule, day, tz)
-        if meetings:
-            return day, meetings
-    return None, []
-
-
-def render_ahead(schedule, now, tz, colours=None):
-    """Rendered only once today is spent; otherwise it is noise.
-
-    Returns (html, day_shown) so the week list below can avoid repeating it.
-    """
-    today = timetable.meetings_on(schedule, now.date(), tz)
-    if any(m.status(now) != "past" for m in today):
-        return "", None
-    day, meetings = next_teaching_day(schedule, now, tz)
-    if not meetings:
-        return "", None
-    label = "Tomorrow" if day == (now.date() + timedelta(days=1)) else day.strftime("%A")
-    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1), today=now.date(), colours=colours)
-                       for m in meetings)
-    html_out = f'''<section class="ahead"><h2>{esc(label)} &mdash; {esc(day.strftime("%B %-d"))}</h2>
-  <div class="rail">{slots}</div></section>'''
-    return html_out, day
 
 
 def _gap(minutes):
@@ -321,27 +268,111 @@ def _gap(minutes):
     return f"in {hours // 24}d {hours % 24}h"
 
 
-def render_hero(schedule, now, tz, colours):
-    """The one line worth reading from across the room: where to be, and when."""
+def _slot(meeting, now, today=None, colours=None):
+    """`now` places the meeting within its own day; `today` is the real date.
+
+    They differ in the look-ahead rail, which fakes `now` to the day it draws. A
+    start-date note is only worth showing before the course has started, or
+    "does not meet before Sept 11" turns up in November.
+    """
+    state = meeting.status(now)
+    course = meeting.course
+    today = today or now.date()
+    colours = colours or {}
+    tint = colours.get(course["code"])
+
+    flag = ""
+    if course.get("note"):
+        starts_on = course.get("starts_on")
+        if not starts_on or date.fromisoformat(starts_on) >= today:
+            flag = f'<div class="flag">{esc(course["note"])}</div>'
+
+    prep = ""
+    for entry in coursesite.entries_for(meeting.day, course["code"]):
+        if entry["kind"] in ("class", "lab"):
+            label = esc(entry["label"])
+            prep = (f'<div class="prep"><a href="{esc(entry["url"])}">{label}</a></div>'
+                    if entry["url"] else f'<div class="prep">{label}</div>')
+            break
+
+    edge = f' style="border-left-color:{tint}"' if tint and state != "current" else ""
+    return f"""<div class="slot {state}">
+  <div class="when num">{meeting.start.strftime('%-I:%M')}<span class="end">{meeting.end.strftime('%-I:%M %p').lower()}</span></div>
+  <div class="body"{edge}>
+    <div class="code">{esc(course['code'])}</div>
+    <div class="title">{esc(course['title'])}</div>
+    <div class="where">{esc(course['room'])}</div>
+    <div class="who">{esc(course['instructor'])}</div>
+    {prep}
+    {flag}
+  </div>
+</div>"""
+
+
+def _nowline(now, current, nxt):
+    if current is not None:
+        left = int((current.end - now).total_seconds() // 60)
+        text = f"{left} min left" if left > 0 else "ending now"
+    elif nxt is not None and nxt.day == now.date():
+        gap = nxt.minutes_until(now)
+        text = f"{_gap(gap)} until {nxt.code}"
+    else:
+        text = "nothing else today"
+    return (f'<div class="nowline"><div class="t">{now.strftime("%-I:%M")}</div>'
+            f'<div class="bar">{esc(text)}</div></div>')
+
+
+def render_band(schedule, now, tz, colours):
+    """The line worth reading from across the room: where to be, and when."""
     current, nxt = timetable.current_and_next(schedule, now, tz)
     if current is not None:
         left = int((current.end - now).total_seconds() // 60)
-        return (f'<div class="hero"><span class="lead">now</span>'
-                f'<span class="what">{dot(current.code, colours)}{esc(current.code)}</span>'
-                f'<span class="meta">{esc(current.course["room"])} &middot; '
-                f'until {current.end.strftime("%-I:%M %p").lower()}</span>'
-                f'<span class="count">{left} min left</span></div>')
+        return f"""<div class="band">
+  <div class="lead">happening now</div>
+  <div class="headline">{dot(current.code, colours)}<span class="code">{esc(current.code)}</span>
+    <span class="where">{esc(current.course['room'])}</span></div>
+  <div class="count num">{left} min left &middot; until {current.end.strftime('%-I:%M %p').lower()}</div>
+</div>"""
     if nxt is not None:
         when = nxt.start.strftime("%-I:%M %p").lower()
         if nxt.day != now.date():
-            when = f'{nxt.start.strftime("%A")} {when}'
-        return (f'<div class="hero"><span class="lead">next</span>'
-                f'<span class="what">{dot(nxt.code, colours)}{esc(nxt.code)}</span>'
-                f'<span class="meta">{esc(nxt.course["room"])} &middot; {esc(when)}</span>'
-                f'<span class="count">{esc(_gap(nxt.minutes_until(now)))}</span></div>')
+            when = f"{nxt.start.strftime('%A')} {when}"
+        return f"""<div class="band">
+  <div class="lead">up next</div>
+  <div class="headline">{dot(nxt.code, colours)}<span class="code">{esc(nxt.code)}</span>
+    <span class="where">{esc(nxt.course['room'])}</span></div>
+  <div class="count num">{esc(_gap(nxt.minutes_until(now)))} &middot; {esc(when)}</div>
+</div>"""
     reason = timetable.no_class_reason(schedule, now.date()) or "No more classes scheduled"
-    return (f'<div class="hero idle"><span class="lead">today</span>'
-            f'<span class="what">{esc(reason)}</span></div>')
+    return (f'<div class="band idle"><div class="lead">today</div>'
+            f'<div class="headline"><span class="code">{esc(reason)}</span></div></div>')
+
+
+def next_teaching_day(schedule, now, tz, limit=7):
+    for offset in range(1, limit + 1):
+        day = now.date() + timedelta(days=offset)
+        meetings = timetable.meetings_on(schedule, day, tz)
+        if meetings:
+            return day, meetings
+    return None, []
+
+
+def render_ahead(schedule, now, tz, colours=None):
+    """Only once today is spent; otherwise it is noise.
+
+    Returns (html, day_shown) so the week list below can avoid repeating it.
+    """
+    today = timetable.meetings_on(schedule, now.date(), tz)
+    if any(m.status(now) != "past" for m in today):
+        return "", None
+    day, meetings = next_teaching_day(schedule, now, tz)
+    if not meetings:
+        return "", None
+    label = "Tomorrow" if day == (now.date() + timedelta(days=1)) else day.strftime("%A")
+    slots = "\n".join(_slot(m, m.start.replace(hour=0, minute=1), today=now.date(),
+                            colours=colours) for m in meetings)
+    return (f'<section><h2>{esc(label.upper())} &middot; {esc(day.strftime("%B %-d"))}</h2>'
+            f'<div class="rail">{slots}</div></section>'), day
 
 
 def render_day(schedule, now, tz, colours=None):
@@ -350,10 +381,9 @@ def render_day(schedule, now, tz, colours=None):
     if not meetings:
         reason = timetable.no_class_reason(schedule, now.date())
         text = f"{reason} &mdash; no classes." if reason else "No classes today."
-        body = f'<div class="empty">{text}</div>'
-        return body + _nowline(now, None, nxt if nxt and nxt.day == now.date() else None)
-    parts = []
-    placed = False
+        return (f'<div class="empty">{text}</div>'
+                + _nowline(now, None, nxt if nxt and nxt.day == now.date() else None))
+    parts, placed = [], False
     for meeting in meetings:
         if not placed and now < meeting.start:
             parts.append(_nowline(now, current, meeting))
@@ -366,16 +396,16 @@ def render_day(schedule, now, tz, colours=None):
 
 def _day_heading(due_local, now):
     if due_local.date() == now.date():
-        return "Today"
+        return "TODAY"
     if due_local.date() == (now + timedelta(days=1)).date():
-        return "Tomorrow"
+        return "TOMORROW"
     if (due_local.date() - now.date()).days < 7:
-        return due_local.strftime("%A")
-    return due_local.strftime("%A %-d %B")
+        return due_local.strftime("%A").upper()
+    return due_local.strftime("%A %-d %B").upper()
 
 
-def render_tasks(rows, now, tz, limit=12, colours=None):
-    """Grouped by the day it is due — a flat list of twelve has no shape."""
+def render_tasks(rows, now, tz, limit=14, colours=None):
+    """Grouped by the day it is due — a flat list of fourteen has no shape."""
     colours = colours or {}
     out, heading = [], None
     for row in rows[:limit]:
@@ -389,17 +419,19 @@ def render_tasks(rows, now, tz, limit=12, colours=None):
             late = " late" if local < now else ""
             out.append(f'<div class="daygroup{late}">{esc(group)}</div>')
         kind = row["kind"]
-        kind_html = f' <span class="kind">{esc(kind)}</span>' if kind not in ("assignment",) else ""
+        kind_html = f' <span class="kind">{esc(kind)}</span>' if kind != "assignment" else ""
         title = esc(row["title"])
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'
         out.append(f"""<div class="task {urgency(local, now)}">
-  <div class="due">{esc(due_label(local, now))}</div>
-  <div><div class="what">{title}{kind_html}</div>
-       <div class="course">{dot(row['course'], colours)}{esc(row['course'])}</div></div>
+  <div>
+    <div class="what">{title}{kind_html}</div>
+    <div class="meta"><span class="at">{esc(due_label(local, now))}</span>
+      {dot(row['course'], colours)}<span>{esc(row['course'])}</span></div>
+  </div>
   <form method="post" action="/done">
     <input type="hidden" name="id" value="{esc(row['id'])}">
-    <button class="tick" type="submit" title="Mark done">&#10003;</button>
+    <button class="tick" type="submit" title="Mark done" aria-label="Mark done">&#10003;</button>
   </form>
 </div>""")
     return "\n".join(out)
@@ -412,7 +444,7 @@ def render_week(schedule, now, tz, days=6, skip=(), colours=None):
             continue
         if meetings:
             inner = " ".join(
-                f'<span>{dot(m.code, colours or {})}{esc(m.code)} '
+                f'<span>{dot(m.code, colours)}{esc(m.code)} '
                 f'<span class="at">{m.start.strftime("%-I:%M")}</span></span>'
                 for m in meetings)
             listing = f'<div class="list">{inner}</div>'
@@ -432,12 +464,12 @@ def render_announcements(rows, now, tz, limit=4):
         title = esc(row["title"])
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'
-        out.append(f'<div class="ann"><div class="head">{title}</div>'
-                   f'<div class="meta">{esc(row["course"])} · {esc(when)}</div></div>')
+        out.append(f'<div class="row"><div class="head">{title}</div>'
+                   f'<div class="meta">{esc(row["course"])} &middot; {esc(when)}</div></div>')
     return "\n".join(out)
 
 
-def render_mail(rows, now, tz, limit=5):
+def render_mail(rows, now, tz, limit=5, colours=None):
     """Course mail only. Unread first — that is the actionable set."""
     out = []
     for row in rows[:limit]:
@@ -447,51 +479,91 @@ def render_mail(rows, now, tz, limit=5):
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'
         state = "read" if row["done"] else "unread"
-        out.append(f'<div class="mailrow {state}"><div class="head">{title}</div>'
-                   f'<div class="meta">{esc(row["course"])} &middot; {esc(when)}</div></div>')
+        out.append(f'<div class="row {state}"><div class="head">{title}</div>'
+                   f'<div class="meta">{dot(row["course"], colours)}{esc(row["course"])}'
+                   f' &middot; {esc(when)}</div></div>')
     return "\n".join(out)
 
 
-def render_grades(rows):
+def render_grades(rows, colours=None):
     out = []
     for row in rows or []:
         score = row.get("score")
         value = f"{score:g}%" if isinstance(score, (int, float)) else "&mdash;"
         letter = f'<span class="g">{esc(row.get("grade"))}</span>' if row.get("grade") else ""
-        out.append(f'<div class="grade"><div class="c">{esc(row.get("course"))}</div>'
+        out.append(f'<div class="grade"><div class="meta">{dot(row.get("course"), colours)}'
+                   f'{esc(row.get("course"))}</div>'
                    f'<div class="v">{value}{letter}</div></div>')
     return "\n".join(out)
 
 
 def render_changed(rows, now, tz, limit=5):
-    """New work, and deadlines that moved since you last looked."""
     out = []
     for row in (rows or [])[:limit]:
         due = parse_utc(row["due_utc"])
         when = due_label(due.astimezone(tz), now) if due else "no date"
         if row["is_new"]:
-            tag = '<span class="tag">new</span>'
+            tag = '<span class="tag">NEW</span>'
         else:
             prev = parse_utc(row["prev_due_utc"])
             was = f' (was {due_label(prev.astimezone(tz), now)})' if prev else ""
-            tag = f'<span class="tag moved">moved{esc(was)}</span>'
-        out.append(f'<div class="row">{tag}{esc(row["title"])} &mdash; '
-                   f'{esc(when)} <span style="color:var(--muted)">{esc(row["course"])}</span></div>')
+            tag = f'<span class="tag moved">MOVED{esc(was)}</span>'
+        out.append(f'<div class="row">{tag}{esc(row["title"])} &mdash; {esc(when)}</div>')
     return "\n".join(out)
 
 
-def render_appointments(rows, now, tz, limit=6):
+def render_appointments(rows, now, tz, limit=6, colours=None):
     out = []
     for row in (rows or [])[:limit]:
         when = parse_utc(row["due_utc"])
         if not when:
             continue
         local = when.astimezone(tz)
-        where = f' <span class="course">{esc(row["body"])}</span>' if row["body"] else ""
-        out.append(f'<div class="task"><div class="due">{esc(due_label(local, now))}</div>'
-                   f'<div><div class="what">{esc(row["title"])}</div>'
-                   f'<div class="course">{esc(row["course"])}{where}</div></div></div>')
+        where = f' &middot; {esc(row["body"])}' if row["body"] else ""
+        out.append(f'<div class="row"><div class="head">{esc(row["title"])}</div>'
+                   f'<div class="meta"><span class="at">{esc(due_label(local, now))}</span>'
+                   f'{esc(row["course"])}{where}</div></div>')
     return "\n".join(out)
+
+
+def _shell(title, inner, refresh=None):
+    meta_refresh = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="schoolboard">
+<link rel="manifest" href="/manifest.webmanifest">
+{meta_refresh}
+<title>{esc(title)}</title>
+<style>{CSS}</style>
+</head><body>
+{inner}
+</body></html>"""
+
+
+def login_page(error=None, retry_after=None):
+    """Own front door rather than a third-party gate."""
+    if retry_after:
+        message = (f'<div class="err">Too many attempts. Try again in '
+                   f'{int(retry_after // 60) + 1} min.</div>')
+        form = ""
+    else:
+        message = f'<div class="err">{esc(error)}</div>' if error else ""
+        form = """<form method="post" action="/login">
+  <input type="password" name="password" placeholder="Password" autofocus
+         autocomplete="current-password" aria-label="Password">
+  <button type="submit">Sign in</button>
+</form>"""
+    return _shell("schoolboard — Sign in", f"""<div class="gate">
+  <h1>schoolboard</h1>
+  <p>Classes, coursework and course mail.</p>
+  {message}
+  {form}
+</div>""")
 
 
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
@@ -499,85 +571,70 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     colours = colour_map(schedule)
     ahead_html, ahead_day = render_ahead(schedule, now, tz, colours)
     skip = (ahead_day,) if ahead_day else ()
+
     online = timetable.online_courses(schedule)
     online_html = ""
     if online:
         names = ", ".join(esc(c["code"]) for c in online)
-        online_html = f'<div class="day"><div class="dname">any</div><div class="list none">{names} — online, no fixed meeting</div></div>'
+        online_html = (f'<div class="day"><div class="dname">any</div>'
+                       f'<div class="list none">{names} &mdash; online, no fixed meeting</div></div>')
 
     if not canvas_ready:
         work = ('<div class="notice">Canvas isn\'t connected yet, so nothing here knows about '
-                'your assignments. Create a token at <b>Canvas → Account → Settings → '
-                'New Access Token</b>, then run <code>schoolboard connect</code></div>')
+                'your assignments. Create a token at <b>Canvas &rarr; Account &rarr; Settings '
+                '&rarr; New Access Token</b>, then run <code>schoolboard connect</code></div>')
     elif tasks.strip():
         work = tasks
     else:
-        work = '<div class="empty" style="padding-left:0">Nothing due in the next stretch.</div>'
+        work = '<div class="empty">Nothing due in the next stretch.</div>'
 
-    ann_block = ""
-    if anns.strip():
-        ann_block = f'<div class="week"><h2>Announcements</h2>{anns}</div>'
-    mail_block = ""
-    if mails.strip():
-        mail_block = f'<div class="week"><h2>Course mail</h2>{mails}</div>'
-    appt_block = ""
-    if appts.strip():
-        appt_block = f'<div class="week"><h2>Calendar</h2>{appts}</div>'
-    grade_block = ""
-    if grades.strip():
-        grade_block = f'<div class="week"><h2>Grades</h2>{grades}</div>'
-    changed_block = f'<div class="changed">{changed}</div>' if changed.strip() else "" 
+    def block(heading, content):
+        return f'<section><h2>{heading}</h2>{content}</section>' if content.strip() else ""
 
-    return f"""<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#16182A">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="schoolboard">
-<link rel="manifest" href="/manifest.webmanifest">
-<meta http-equiv="refresh" content="{int(refresh)}">
-<title>{now.strftime('%A')} — schoolboard</title>
-<style>{CSS}</style>
-</head><body>
-<header>
-  <div>
-    <div class="today-name">{now.strftime('%A')}</div>
-    <div class="today-date">{now.strftime('%B %-d, %Y')} · {esc(schedule.get('term',''))}</div>
-  </div>
-  <div>
-    <div class="clock">{now.strftime('%-I:%M %p').lower()}</div>
-    <div class="place">{esc(schedule.get('campus',''))}<br>{esc(schedule.get('residence',''))}</div>
+    changed_block = f'<div class="changed">{changed}</div>' if changed.strip() else ""
+
+    return _shell(f"{now.strftime('%A')} — schoolboard", f"""<header>
+  <div class="masthead">
+    <div>
+      <div class="daylabel">{now.strftime('%A')}</div>
+      <div class="subhead">{now.strftime('%B %-d, %Y')} &middot; {esc(schedule.get('term',''))}</div>
+    </div>
+    <div class="right">
+      <div class="clock">{now.strftime('%-I:%M')}<span style="font-size:.5em"> {now.strftime('%p').lower()}</span></div>
+      <div class="place">{esc(schedule.get('campus',''))}</div>
+    </div>
   </div>
 </header>
 
-{render_hero(schedule, now, tz, colours)}
+{render_band(schedule, now, tz, colours)}
 
 <div class="columns">
-  <section>
-    <h2>Today</h2>
-    <div class="rail">{render_day(schedule, now, tz, colours)}</div>
+  <div>
+    <section>
+      <h2>TODAY</h2>
+      <div class="rail">{render_day(schedule, now, tz, colours)}</div>
+    </section>
     {ahead_html}
-    <div class="week">
-      <h2>Rest of the week</h2>
+    <section>
+      <h2>REST OF THE WEEK</h2>
       {render_week(schedule, now, tz, skip=skip, colours=colours)}
       {online_html}
-    </div>
-  </section>
-  <section>
-    <h2>Due soon</h2>
-    {changed_block}
-    {work}
-    {appt_block}
-    {ann_block}
-    {mail_block}
-    {grade_block}
-  </section>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>DUE SOON</h2>
+      {changed_block}
+      {work}
+    </section>
+    {block("CALENDAR", appts)}
+    {block("ANNOUNCEMENTS", anns)}
+    {block("COURSE MAIL", mails)}
+    {block("GRADES", grades)}
+  </div>
 </div>
 
 <footer>
   <span>{esc(sync_note)}</span>
-  <span>times in {esc(now.strftime('%Z'))} · schedule from Student Hub</span>
-</footer>
-</body></html>"""
+  <span>{esc(now.strftime('%Z'))}</span>
+</footer>""", refresh=refresh)

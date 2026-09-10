@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import canvas, config, coursesite, ics, mail, notify, render, store, timetable
+from . import auth, canvas, config, coursesite, ics, mail, notify, render, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
@@ -106,10 +106,10 @@ def build_page():
         colours = render.colour_map(schedule)
         tasks = render.render_tasks(store.upcoming(conn), now, tz, colours=colours)
         anns = render.render_announcements(store.announcements(conn), now, tz)
-        mails = render.render_mail(store.mail(conn), now, tz)
-        grades = render.render_grades(store.get_meta(conn, "grades") or [])
+        mails = render.render_mail(store.mail(conn), now, tz, colours=colours)
+        grades = render.render_grades(store.get_meta(conn, "grades") or [], colours=colours)
         changed = render.render_changed(store.recently_changed(conn), now, tz)
-        appts = render.render_appointments(store.appointments(conn), now, tz)
+        appts = render.render_appointments(store.appointments(conn), now, tz, colours=colours)
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
@@ -119,8 +119,14 @@ def build_page():
                        refresh=cfg["refresh_seconds"])
 
 
+THROTTLE = auth.Throttle()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "schoolboard"
+    # The trusted listener (localhost + tailnet). Tailscale has already
+    # authenticated the caller, so a password there is friction without benefit.
+    requires_auth = False
 
     def log_message(self, fmt, *args):
         pass  # a kiosk refreshing every 60s would otherwise flood syslog
@@ -134,14 +140,58 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    # --- auth helpers ----------------------------------------------------
+    def _secret(self):
+        cfg = config.load_config()
+        return auth.ensure_secret(cfg, config.save_config)
+
+    def _authed(self):
+        if not self.requires_auth:
+            return True
+        cfg = config.load_config()
+        if not (cfg.get("auth") or {}).get("password_hash"):
+            return True          # no password set yet; do not lock him out
+        token = auth.read_cookie(self.headers.get("Cookie"))
+        return auth.valid(token, self._secret())
+
+    def _to_login(self):
+        self.send_response(302)
+        self.send_header("Location", "/login")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _handle_login_post(self, fields):
+        cfg = config.load_config()
+        stored = (cfg.get("auth") or {}).get("password_hash")
+        key = self.client_address[0]
+        if THROTTLE.blocked(key):
+            self._send(render.login_page(retry_after=THROTTLE.window), status=429)
+            return
+        password = (fields.get("password") or [""])[0]
+        if stored and auth.verify_password(password, stored):
+            THROTTLE.clear(key)
+            token = auth.issue(self._secret())
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", auth.cookie_header(token))
+            self.end_headers()
+            return
+        THROTTLE.record(key)
+        self._send(render.login_page(error="That password is not right."), status=401)
+
     def do_POST(self):
         path = self.path.split("?")[0]
+        length = int(self.headers.get("Content-Length") or 0)
+        fields = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8")) if length else {}
+        if path == "/login":
+            self._handle_login_post(fields)
+            return
+        if not self._authed():
+            self._to_login()
+            return
         if path != "/done":
             self._send("<h1>404</h1>", status=404)
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length).decode("utf-8")
-        fields = urllib.parse.parse_qs(body)
         item_id = (fields.get("id") or [""])[0]
         undo = (fields.get("undo") or [""])[0] == "1"
         try:
@@ -155,6 +205,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         try:
+            if path == "/login":
+                if self._authed():
+                    self.send_response(302); self.send_header("Location", "/"); self.end_headers()
+                else:
+                    self._send(render.login_page())
+                return
+            if path == "/logout":
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.send_header("Set-Cookie", auth.clear_header())
+                self.end_headers()
+                return
+            if path == "/healthz":
+                self._send("ok", ctype="text/plain; charset=utf-8")
+                return
+            if not self._authed():
+                self._to_login()
+                return
             if path in ("/", "/index.html"):
                 self._send(build_page())
             elif path == "/sync":
@@ -165,8 +233,6 @@ class Handler(BaseHTTPRequestHandler):
                     "start_url": "/", "display": "standalone",
                     "background_color": "#16182A", "theme_color": "#16182A",
                 }), ctype="application/manifest+json")
-            elif path == "/healthz":
-                self._send("ok", ctype="text/plain; charset=utf-8")
             else:
                 self._send("<h1>404</h1>", status=404)
         except Exception:
@@ -270,8 +336,8 @@ def tailnet_address(iface="tailscale0"):
         return None
 
 
-def _listen(addr, port, label):
-    httpd = ThreadingHTTPServer((addr, port), Handler)
+def _listen(addr, port, label, handler=Handler):
+    httpd = ThreadingHTTPServer((addr, port), handler)
     print(f"schoolboard listening on http://{addr}:{port}  ({label})", flush=True)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -293,6 +359,11 @@ def _bind_tailnet_when_ready(port, attempts=60, delay=10):
     print("tailnet address never appeared; serving on localhost only", flush=True)
 
 
+class PublicHandler(Handler):
+    """The tunnel's listener. Reached only by cloudflared, and always gated."""
+    requires_auth = True
+
+
 def serve(bind=None, port=None):
     cfg = config.load_config()
     bind = bind or cfg["bind"]
@@ -302,6 +373,10 @@ def serve(bind=None, port=None):
         threading.Thread(target=_notify_loop, daemon=True).start()
     print(f"schoolboard starting (timezone {cfg['timezone']})", flush=True)
     _listen(bind, port, "local")
+    public_port = cfg.get("public_port")
+    if public_port:
+        _listen("127.0.0.1", int(public_port), "public (login required)",
+                handler=PublicHandler)
     if cfg.get("bind_tailnet", True):
         threading.Thread(target=_bind_tailnet_when_ready, args=(port,), daemon=True).start()
     while True:
