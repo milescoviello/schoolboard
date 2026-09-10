@@ -42,6 +42,12 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+# Kinds whose timestamp is an arrival time, not a deadline. Mixing these into
+# "Due soon" renders every one of them as overdue — it happened once with
+# announcements, so the rule is now explicit rather than a special case.
+NON_WORK_KINDS = ("announcement", "mail")
+
+
 def upsert_items(conn, items):
     """Insert or update. Returns (new, updated)."""
     now = _now()
@@ -86,16 +92,24 @@ def upcoming(conn, limit=40, stale_days=14):
     timestamp is when they were posted, not something owed, and treating the two
     alike renders every announcement as overdue."""
     floor = (datetime.now(timezone.utc) - timedelta(days=stale_days)).isoformat()
+    holes = ",".join("?" * len(NON_WORK_KINDS))
     return conn.execute(
-        "SELECT * FROM items WHERE done=0 AND due_utc IS NOT NULL "
-        "AND kind != 'announcement' AND due_utc > ? "
-        "ORDER BY due_utc ASC LIMIT ?", (floor, limit)).fetchall()
+        f"SELECT * FROM items WHERE done=0 AND due_utc IS NOT NULL "
+        f"AND kind NOT IN ({holes}) AND due_utc > ? "
+        f"ORDER BY due_utc ASC LIMIT ?", (*NON_WORK_KINDS, floor, limit)).fetchall()
 
 
 def undated(conn, limit=20):
     return conn.execute(
         "SELECT * FROM items WHERE done=0 AND due_utc IS NULL AND kind!='announcement' "
         "ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
+
+
+def mail(conn, limit=8):
+    """Unread first, then most recent — the unread ones are the actionable set."""
+    return conn.execute(
+        "SELECT * FROM items WHERE kind='mail' "
+        "ORDER BY done ASC, due_utc DESC LIMIT ?", (limit,)).fetchall()
 
 
 def announcements(conn, limit=8):

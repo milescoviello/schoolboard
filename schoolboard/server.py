@@ -4,53 +4,74 @@ Single-purpose and deliberately small: render on request, sync Canvas on a timer
 in the background. A failed sync never blanks the page — the last good data stays
 on screen with an honest "last synced" line in the footer.
 """
+import fcntl
+import socket
+import struct
+import subprocess
 import threading
 import time
 import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import canvas, config, render, store, timetable
+from . import canvas, config, mail, render, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
-    """Pull Canvas into the store. Returns a human-readable result line."""
+    """Pull every source into the store. Returns a human-readable result line.
+
+    Sources are independent: mail still updates when Canvas has no token, and a
+    Canvas outage never blocks mail.
+    """
     cfg = cfg or config.load_config()
     schedule = schedule or config.load_schedule()
-    token = cfg["canvas"]["token"]
-    if not token:
-        return "Canvas not connected"
     conn = store.connect()
+    parts = []
     try:
-        items, report = canvas.collect(cfg["canvas"]["base_url"], token, schedule)
-        new, updated = store.upsert_items(conn, items)
+        token = cfg["canvas"]["token"]
+        if token:
+            try:
+                items, report = canvas.collect(cfg["canvas"]["base_url"], token, schedule)
+                new, updated = store.upsert_items(conn, items)
+                note = f"Canvas: {report['courses']} courses, {new} new, {updated} updated"
+                if report["notes"]:
+                    note += " (" + "; ".join(report["notes"]) + ")"
+                parts.append(note)
+                store.set_meta(conn, "last_sync_error", None)
+            except canvas.CanvasError as exc:
+                store.set_meta(conn, "last_sync_error", str(exc))
+                parts.append(f"Canvas failed: {exc}")
+        else:
+            parts.append("Canvas not connected")
+
+        mail_items, mail_report = mail.collect(schedule)
+        if mail_report.get("available"):
+            store.upsert_items(conn, mail_items)
+            parts.append(f"mail: {mail_report['relevant']} of "
+                         f"{mail_report['scanned']} relevant")
+            store.set_meta(conn, "mail_generated_at", mail_report.get("generated_at"))
+        else:
+            parts.append("mail: no drop file yet")
+
         store.set_meta(conn, "last_sync", datetime.now().astimezone().isoformat())
-        store.set_meta(conn, "last_sync_error", None)
-        note = f"{report['courses']} courses, {new} new, {updated} updated"
-        if report["notes"]:
-            note += " (" + "; ".join(report["notes"]) + ")"
+        note = " · ".join(parts)
         store.set_meta(conn, "last_sync_note", note)
         return note
-    except canvas.CanvasError as exc:
-        store.set_meta(conn, "last_sync_error", str(exc))
-        return f"sync failed: {exc}"
     finally:
         conn.close()
 
 
 def _sync_note(conn, cfg):
-    if not cfg["canvas"]["token"]:
-        return "Canvas not connected"
     err = store.get_meta(conn, "last_sync_error")
     last = store.get_meta(conn, "last_sync")
     if err:
         return f"Canvas sync failing — {err}"
     if not last:
-        return "Canvas connected, first sync pending"
+        return "first sync pending"
     when = datetime.fromisoformat(last)
     mins = int((datetime.now().astimezone() - when).total_seconds() // 60)
     ago = "just now" if mins < 1 else (f"{mins} min ago" if mins < 90 else f"{mins // 60}h ago")
-    return f"Canvas synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
+    return f"synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
 
 
 def build_page():
@@ -62,10 +83,11 @@ def build_page():
     try:
         tasks = render.render_tasks(store.upcoming(conn), now, tz)
         anns = render.render_announcements(store.announcements(conn), now, tz)
+        mails = render.render_mail(store.mail(conn), now, tz)
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
-    return render.page(schedule, now, tz, tasks, anns, note,
+    return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
                        canvas_ready=bool(cfg["canvas"]["token"]),
                        refresh=cfg["refresh_seconds"])
 
@@ -109,12 +131,60 @@ def _sync_loop(interval_minutes):
         time.sleep(max(60, interval_minutes * 60))
 
 
+def tailnet_address(iface="tailscale0"):
+    """The host's own tailnet IPv4, or None if Tailscale isn't up yet.
+
+    Binding the server here directly (rather than proxying via `tailscale serve`)
+    means the IP, the short name and the FQDN all work. `tailscale serve` matches
+    on the Host header, so hitting the bare tailnet IP returns 404.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        packed = struct.pack("256s", iface.encode()[:15])
+        addr = fcntl.ioctl(sock.fileno(), 0x8915, packed)[20:24]  # SIOCGIFADDR
+        sock.close()
+        return socket.inet_ntoa(addr)
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
+                             text=True, timeout=10)
+        return (out.stdout.strip().splitlines() or [None])[0]
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _listen(addr, port, label):
+    httpd = ThreadingHTTPServer((addr, port), Handler)
+    print(f"schoolboard listening on http://{addr}:{port}  ({label})", flush=True)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def _bind_tailnet_when_ready(port, attempts=60, delay=10):
+    """Tailscale often isn't up when this starts at boot. Keep trying rather
+    than silently ending up localhost-only until someone notices."""
+    for _ in range(attempts):
+        addr = tailnet_address()
+        if addr:
+            try:
+                _listen(addr, port, "tailnet")
+                return
+            except OSError as exc:
+                print(f"tailnet bind on {addr} failed: {exc}", flush=True)
+                return
+        time.sleep(delay)
+    print("tailnet address never appeared; serving on localhost only", flush=True)
+
+
 def serve(bind=None, port=None):
     cfg = config.load_config()
     bind = bind or cfg["bind"]
     port = port or cfg["port"]
-    if cfg["canvas"]["token"]:
-        threading.Thread(target=_sync_loop, args=(cfg["sync_minutes"],), daemon=True).start()
-    httpd = ThreadingHTTPServer((bind, port), Handler)
-    print(f"schoolboard on http://{bind}:{port}  (timezone {cfg['timezone']})")
-    httpd.serve_forever()
+    threading.Thread(target=_sync_loop, args=(cfg["sync_minutes"],), daemon=True).start()
+    print(f"schoolboard starting (timezone {cfg['timezone']})", flush=True)
+    _listen(bind, port, "local")
+    if cfg.get("bind_tailnet", True):
+        threading.Thread(target=_bind_tailnet_when_ready, args=(port,), daemon=True).start()
+    while True:
+        time.sleep(3600)

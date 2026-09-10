@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS = {
     "port": 8888,
     "bind": "127.0.0.1",
+    # Also listen on the tailnet address, so phone/laptop reach it by name or IP.
+    # Never 0.0.0.0: the dorm /19 passes unicast between clients.
+    "bind_tailnet": True,
     # Never inherit the host clock. The mini has been sitting on America/New_York
     # while physically in Oakland, which is exactly how you miss a class.
     "timezone": "America/Los_Angeles",

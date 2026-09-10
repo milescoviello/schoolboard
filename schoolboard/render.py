@@ -109,6 +109,13 @@ h2{font-size:15px;font-weight:700;color:var(--muted);margin-bottom:14px}
         padding:14px 16px;border-radius:0 4px 4px 0;margin-bottom:20px;font-size:16px}
 .notice code{font-family:var(--figures);background:var(--ground);
              padding:1px 6px;border-radius:3px;font-size:14px}
+.mailrow{padding:10px 0 10px 17px;border-bottom:1px solid var(--line);position:relative}
+.mailrow:last-child{border-bottom:0}
+.mailrow.unread::before{content:"";position:absolute;left:0;top:17px;width:7px;height:7px;
+                        border-radius:50%;background:var(--now)}
+.mailrow.read{opacity:.6}
+.mailrow .head{font-size:16px;line-height:1.35}
+.mailrow .meta{color:var(--muted);font-size:14px;margin-top:2px}
 .ann{padding:10px 0;border-bottom:1px solid var(--line)}
 .ann:last-child{border-bottom:0}
 .ann .head{font-size:16px}
@@ -294,7 +301,22 @@ def render_announcements(rows, now, tz, limit=4):
     return "\n".join(out)
 
 
-def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60):
+def render_mail(rows, now, tz, limit=5):
+    """Course mail only. Unread first — that is the actionable set."""
+    out = []
+    for row in rows[:limit]:
+        received = parse_utc(row["due_utc"])
+        when = received.astimezone(tz).strftime("%b %-d") if received else ""
+        title = esc(row["title"])
+        if row["url"]:
+            title = f'<a href="{esc(row["url"])}">{title}</a>'
+        state = "read" if row["done"] else "unread"
+        out.append(f'<div class="mailrow {state}"><div class="head">{title}</div>'
+                   f'<div class="meta">{esc(row["course"])} &middot; {esc(when)}</div></div>')
+    return "\n".join(out)
+
+
+def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails=""):
     ahead_html, ahead_day = render_ahead(schedule, now, tz)
     skip = (ahead_day,) if ahead_day else ()
     online = timetable.online_courses(schedule)
@@ -315,6 +337,9 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60):
     ann_block = ""
     if anns.strip():
         ann_block = f'<div class="week"><h2>Announcements</h2>{anns}</div>'
+    mail_block = ""
+    if mails.strip():
+        mail_block = f'<div class="week"><h2>Course mail</h2>{mails}</div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
@@ -350,6 +375,7 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60):
     <h2>Due soon</h2>
     {work}
     {ann_block}
+    {mail_block}
   </section>
 </div>
 
