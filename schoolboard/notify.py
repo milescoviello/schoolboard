@@ -98,11 +98,45 @@ def _esc(text):
     return (str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def quiet_window_start(cfg, moment):
+    """If `moment` falls inside quiet hours, when that quiet window began."""
+    nc = cfg.get("notify", {})
+    start, end = nc.get("quiet_start"), nc.get("quiet_end")
+    if start is None or end is None or int(start) == int(end):
+        return None
+    start, end = int(start), int(end)
+    if not in_quiet_hours(cfg, moment):
+        return None
+    boundary = moment.replace(hour=start, minute=0, second=0, microsecond=0)
+    if start > end and moment.hour < end:
+        boundary -= timedelta(days=1)      # window began the previous evening
+    return boundary
+
+
+def effective_send_time(ideal, cfg):
+    """When to actually send a warning whose natural time is `ideal`.
+
+    A deadline at 5:45am gets its 3h warning at 2:45am — inside quiet hours, so
+    it is held, and by the time quiet ends the deadline has passed and the rule
+    skips it entirely. Nothing is ever sent. So a warning that would land in the
+    quiet window is pulled back to just before that window starts instead.
+    """
+    window = quiet_window_start(cfg, ideal)
+    if window is None:
+        return ideal
+    return min(ideal, window - timedelta(minutes=5))
+
+
 def build_messages(conn, schedule, cfg, now, tz):
-    """Every notification that is due right now, as (key, text) pairs.
+    """Every notification due right now, as (key, text, allow_in_quiet) triples.
 
     Keys are stable and unique per event, so a rule that keeps matching for an
     hour still only sends once.
+
+    `allow_in_quiet` is set when the message was *scheduled* to go out before
+    quiet hours began. Otherwise a tick arriving a minute late would hold it,
+    quiet hours would end after the deadline had passed, and it would never be
+    sent at all.
     """
     nc = cfg.get("notify", {})
     out = []
@@ -118,10 +152,14 @@ def build_messages(conn, schedule, cfg, now, tz):
                 f"class:{course['code']}:{now.date().isoformat()}",
                 f"<b>{_esc(course['code'])}</b> in {minutes} min\n"
                 f"{_esc(course['room'])} · {meeting.start.strftime('%-I:%M %p').lower()}",
+                False,
             ))
 
     # 2. Unsubmitted work crossing a deadline threshold.
-    thresholds = sorted((float(h) for h in nc.get("due_thresholds_hours", [24, 3])), reverse=True)
+    # Ascending, so the TIGHTEST threshold that has come due wins. Descending
+    # meant 24h always matched first and broke out of the loop, so the 3h
+    # escalation could never fire for anything.
+    thresholds = sorted(float(h) for h in nc.get("due_thresholds_hours", [24, 3]))
     for row in store.upcoming(conn, limit=60):
         due = _parse(row["due_utc"])
         if not due:
@@ -131,19 +169,22 @@ def build_messages(conn, schedule, cfg, now, tz):
         if remaining <= 0:
             continue
         for threshold in thresholds:
-            if remaining <= threshold:
+            send_at = effective_send_time(local - timedelta(hours=threshold), cfg)
+            if now >= send_at:
                 label = f"{int(threshold)}h"
                 out.append((
                     f"due:{row['id']}:{label}",
                     f"<b>Due {_fmt_due(local, now)}</b>\n"
                     f"{_esc(row['title'])}\n{_esc(row['course'])}",
+                    not in_quiet_hours(cfg, send_at),
                 ))
                 break
 
     # 3. A morning digest, once a day.
     digest_hour = nc.get("digest_hour")
     if digest_hour is not None and now.hour >= int(digest_hour):
-        out.append((f"digest:{now.date().isoformat()}", digest_text(conn, schedule, now, tz)))
+        out.append((f"digest:{now.date().isoformat()}",
+                    digest_text(conn, schedule, now, tz), False))
 
     return out
 
@@ -197,25 +238,28 @@ def tick(conn, schedule, cfg, now, tz, force=False):
     env = read_env(nc.get("telegram_env"))
     bot = Telegram(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"))
     messages = build_messages(conn, schedule, cfg, now, tz)
-    fresh = [(k, t) for k, t in messages if not already_sent(conn, k)]
+    fresh = [m for m in messages if not already_sent(conn, m[0])]
     if not fresh:
         return "nothing to send"
 
     # First ever run: record what currently matches without sending, so turning
     # this on doesn't dump a backlog into the chat.
     if not force and not store.get_meta(conn, "notify_primed"):
-        for key, _ in fresh:
+        for key, _, _allow in fresh:
             mark_sent(conn, key, "(primed, not sent)")
         store.set_meta(conn, "notify_primed", True)
         return f"primed {len(fresh)} existing items without sending"
 
     if in_quiet_hours(cfg, now):
-        return f"quiet hours; holding {len(fresh)}"
+        held = [m for m in fresh if not m[2]]
+        fresh = [m for m in fresh if m[2]]
+        if not fresh:
+            return f"quiet hours; holding {len(held)}"
     if not bot.ready:
         return "telegram credentials missing"
 
     sent = failed = 0
-    for key, text in fresh:
+    for key, text, _allow in fresh:
         ok, note = bot.send(text)
         if ok:
             mark_sent(conn, key, text)
