@@ -27,6 +27,12 @@ DEFAULTS = {
     "refresh_seconds": 60,
     "sync_minutes": 15,
     "due_soon_days": 10,
+    # Minutes to allow for getting to the next class. Oakland is small but
+    # Natural Science to CPM is still a walk.
+    "walk_minutes": 10,
+    # "light" or "auto". Light by default because he asked for a light theme;
+    # "auto" adds a dark variant that follows the device at night.
+    "theme": "light",
     "canvas": {"base_url": "https://northeastern.instructure.com", "token": ""},
     # Public course sites. The only source for per-class prep material — Canvas
     # has the assignment, the site has what to read before Thursday.
@@ -46,6 +52,8 @@ DEFAULTS = {
         "class_lead_minutes": 15,
         "due_thresholds_hours": [24, 3],
         "digest_hour": 8,
+        # Sunday evening look at the week ahead.
+        "weekly_hour": 18,
         "quiet_start": 22,
         "quiet_end": 7,
     },

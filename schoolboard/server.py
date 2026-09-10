@@ -16,7 +16,7 @@ import traceback
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import auth, canvas, config, coursesite, ics, mail, notify, render, store, timetable
+from . import auth, canvas, config, coursesite, ics, mail, notify, render, status, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
@@ -113,13 +113,17 @@ def build_page(week=None, focus_day=None):
         appts = render.render_appointments(store.appointments(conn), now, tz, colours=colours)
         completed = render.render_completed(store.completed(conn), now, tz, colours=colours)
         workload = store.workload(conn)
+        personal = render.render_personal(store.personal(conn), now, tz)
+        sources = render.render_sources(status.sources(cfg, conn, store.get_meta))
         note = _sync_note(conn, cfg)
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
                        grades=grades, changed=changed, appts=appts,
                        week=week, workload=workload, completed=completed,
-                       focus_day=focus_day,
+                       focus_day=focus_day, personal=personal, sources=sources,
+                       walk_minutes=cfg.get("walk_minutes", 0),
+                       theme=cfg.get("theme", "light"),
                        canvas_ready=bool(cfg["canvas"]["token"]),
                        refresh=cfg["refresh_seconds"])
 
@@ -194,6 +198,35 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             self._to_login()
             return
+        if path == "/add":
+            title = (fields.get("title") or [""])[0].strip()
+            raw_due = (fields.get("due") or [""])[0].strip()
+            if title:
+                due_utc = None
+                if raw_due:
+                    try:
+                        cfg = config.load_config()
+                        tz = timetable.tzinfo(cfg["timezone"])
+                        local = datetime.fromisoformat(raw_due).replace(
+                            hour=23, minute=59, tzinfo=tz)
+                        due_utc = local.astimezone(timezone.utc).isoformat()
+                    except ValueError:
+                        due_utc = None
+                conn = store.connect()
+                try:
+                    store.add_personal(conn, title, due_utc)
+                finally:
+                    conn.close()
+            self._redirect("/")
+            return
+        if path == "/delete":
+            conn = store.connect()
+            try:
+                store.delete_item(conn, (fields.get("id") or [""])[0])
+            finally:
+                conn.close()
+            self._redirect("/")
+            return
         if path != "/done":
             self._send("<h1>404</h1>", status=404)
             return
@@ -203,8 +236,11 @@ class Handler(BaseHTTPRequestHandler):
             mark_item(item_id, done=not undo)
         except Exception:
             traceback.print_exc()
+        self._redirect("/")
+
+    def _redirect(self, where):
         self.send_response(303)
-        self.send_header("Location", "/")
+        self.send_header("Location", where)
         self.end_headers()
 
     def do_GET(self):
@@ -223,7 +259,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             if path == "/healthz":
-                self._send("ok", ctype="text/plain; charset=utf-8")
+                ok, detail = health()
+                self._send(detail, status=200 if ok else 500,
+                           ctype="text/plain; charset=utf-8")
                 return
             if not self._authed():
                 self._to_login()
@@ -314,11 +352,41 @@ def notify_once(cfg=None, schedule=None, force=False):
         conn.close()
 
 
+def health_alert():
+    """Tell him when the board itself is broken.
+
+    This is the gap that let the page 500 for hours with nobody knowing: the old
+    /healthz could not fail, and nothing was watching anyway. Rate-limited to
+    once an hour so a sustained outage does not become a flood, and exempt from
+    quiet hours because a dead board at 3am is still dead at 8am.
+    """
+    ok, detail = health(ttl=0)
+    if ok:
+        return
+    cfg = config.load_config()
+    conn = store.connect()
+    try:
+        key = f"health:{datetime.now().strftime('%Y-%m-%dT%H')}"
+        if notify.already_sent(conn, key):
+            return
+        env = notify.read_env(cfg.get("notify", {}).get("telegram_env"))
+        bot = notify.Telegram(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"))
+        sent, _ = bot.send(f"<b>schoolboard is broken</b>\n{detail}")
+        if sent:
+            notify.mark_sent(conn, key, detail)
+    finally:
+        conn.close()
+
+
 def _notify_loop():
     """Every 60s. A class starting in 15 minutes cannot wait for a 15-min sync."""
     while True:
         try:
             notify_once()
+        except Exception:
+            traceback.print_exc()
+        try:
+            health_alert()
         except Exception:
             traceback.print_exc()
         time.sleep(60)
@@ -377,6 +445,30 @@ def _bind_tailnet_when_ready(port, attempts=60, delay=10):
                 return
         time.sleep(delay)
     print("tailnet address never appeared; serving on localhost only", flush=True)
+
+
+_HEALTH_CACHE = {"at": 0.0, "ok": True, "detail": "ok"}
+
+
+def health(ttl=20):
+    """Actually render the board and report whether it worked.
+
+    The old version returned a hardcoded "ok" whenever the socket was open, so
+    it reported healthy throughout an outage where every page 500'd. A health
+    check that cannot fail is not a health check.
+    """
+    now = time.time()
+    if now - _HEALTH_CACHE["at"] < ttl:
+        return _HEALTH_CACHE["ok"], _HEALTH_CACHE["detail"]
+    try:
+        page = build_page()
+        if "<html" not in page or len(page) < 2000:
+            raise RuntimeError(f"page too small ({len(page)} bytes)")
+        ok, detail = True, f"ok {len(page)}"
+    except Exception as exc:
+        ok, detail = False, f"render failed: {type(exc).__name__}: {exc}"[:300]
+    _HEALTH_CACHE.update(at=now, ok=ok, detail=detail)
+    return ok, detail
 
 
 class PublicHandler(Handler):

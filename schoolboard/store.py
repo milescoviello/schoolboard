@@ -198,6 +198,36 @@ def workload(conn):
     return {r["d"]: (r["n"], r["f"] or 0) for r in rows}
 
 
+def personal(conn, include_done=False, limit=40):
+    """Items he added himself.
+
+    The board otherwise only knows what instructors put in Canvas, and CS 1800
+    runs its announcements through Discord — so a real part of his term can
+    never arrive automatically.
+    """
+    clause = "" if include_done else " AND done=0"
+    return conn.execute(
+        f"SELECT * FROM items WHERE source='local'{clause} "
+        f"ORDER BY (due_utc IS NULL), due_utc LIMIT ?", (limit,)).fetchall()
+
+
+def add_personal(conn, title, due_utc=None, course="Mine"):
+    import uuid
+    item = {"id": f"local:{uuid.uuid4().hex[:12]}", "source": "local", "kind": "task",
+            "course": course, "title": title.strip(), "due_utc": due_utc,
+            "url": None, "done": 0, "body": None}
+    upsert_items(conn, [item])
+    return item["id"]
+
+
+def delete_item(conn, item_id):
+    """Only ever removes something he added. Canvas rows come back on next sync
+    anyway, so deleting one would be a lie that lasts fifteen minutes."""
+    cur = conn.execute("DELETE FROM items WHERE id=? AND source='local'", (item_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def announcements(conn, limit=8):
     return conn.execute(
         "SELECT * FROM items WHERE kind='announcement' "

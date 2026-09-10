@@ -204,6 +204,26 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .gr .g{color:var(--mut);font-size:13px;margin-left:5px;font-weight:400}
 .empty{color:var(--mut);font-size:15px;padding:6px 0 2px}
 .more{color:var(--mut);font-size:13.5px;padding:14px 0 2px}
+.it.local{grid-template-columns:minmax(0,1fr) 38px 30px}
+.del{width:28px;height:34px;border:0;background:none;color:var(--mut);font-size:16px;
+     cursor:pointer;border-radius:8px;line-height:1}
+.del:hover{color:var(--late)}
+.addf{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--hair)}
+.addf input[type=text]{flex:1;min-width:0;font:inherit;font-size:15px;padding:10px 12px;
+     border:1px solid var(--line);border-radius:var(--r2);background:var(--sunk);color:var(--ink)}
+.addf input[type=date]{font:inherit;font-size:14px;padding:10px;border:1px solid var(--line);
+     border-radius:var(--r2);background:var(--sunk);color:var(--ink);width:140px}
+.addf input:focus{outline:2px solid var(--live);outline-offset:1px;background:var(--card)}
+.addf button{font:inherit;font-size:15px;font-weight:600;padding:10px 16px;border:0;
+     border-radius:var(--r2);background:var(--ink);color:var(--card);cursor:pointer;
+     transition:transform .12s ease,opacity .12s ease}
+.addf button:hover{opacity:.9}
+.addf button:active{transform:scale(.97)}
+.leave{margin-top:9px;font-size:14px;color:var(--due);font-weight:600}
+.srcs{display:flex;gap:14px;flex-wrap:wrap}
+.srcs b{font-weight:400}
+.srcs .s{color:var(--mut)}
+.srcs .s.old{color:var(--due);font-weight:600}
 .note{border:1px solid var(--line);border-left:3px solid var(--due);border-radius:var(--r2);
       padding:14px 16px;font-size:15px;line-height:1.55;background:var(--sunk)}
 .note code{background:var(--card);padding:2px 6px;border-radius:5px;font-size:13px;
@@ -343,7 +363,25 @@ def monday_of(day):
 
 # ------------------------------------------------------------------ pieces
 
-def hero(schedule, now, tz, colours):
+DARK_CSS = r"""
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#101315; --card:#171B1E; --sunk:#1D2225;
+    --ink:#E9EDEE; --ink2:#B4BDC1; --mut:#89949A;
+    --line:#262C30; --hair:#1F2528;
+    --live:#43C9AE; --live-bg:#16302C;
+    --due:#E0A458; --late:#E8737C;
+    --c0:#7FAEFF; --c0b:#182234; --c1:#C6A0F0; --c1b:#251C33;
+    --c2:#F291BF; --c2b:#331B27; --c3:#96D177; --c3b:#1B2A18;
+    --c4:#5CC8D2; --c4b:#132A2C; --c5:#DDA771; --c5b:#2C2117;
+    --c6:#9AA6EA; --c6b:#1C1F33;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 18px -6px rgba(0,0,0,.5);
+  }
+}
+"""
+
+
+def hero(schedule, now, tz, colours, walk_minutes=0):
     """The largest element: what happens next, and how long you have."""
     current, nxt = timetable.current_and_next(schedule, now, tz)
     meetings = timetable.meetings_on(schedule, now.date(), tz)
@@ -371,6 +409,13 @@ def hero(schedule, now, tz, colours):
     if nxt is not None:
         when = nxt.start.strftime("%-I:%M %p").lower()
         day_word = "today" if nxt.day == now.date() else nxt.start.strftime("%A")
+        leave = ""
+        if walk_minutes and nxt.day == now.date():
+            depart = nxt.start - timedelta(minutes=walk_minutes)
+            if depart > now:
+                leave = (f'<div class="leave">Leave by '
+                         f'{depart.strftime("%-I:%M %p").lower()}</div>')
+        bar = leave + bar
         return f"""<div class="hero">
   <div class="k">Next up</div>
   <div class="row"><span class="code">{esc(nxt.code)}</span>
@@ -589,19 +634,89 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10):
         title = esc(row["title"])
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'
+        mine = row["source"] == "local"
+        delete = ("" if not mine else
+                  f'<form method="post" action="/delete">'
+                  f'<input type="hidden" name="id" value="{esc(row["id"])}">'
+                  f'<button class="del" type="submit" aria-label="Delete">&times;</button>'
+                  f'</form>')
         out.append(
-            f'<div class="it {urgency(local, now)}"><div>'
+            f'<div class="it {urgency(local, now)}{" local" if mine else ""}"><div>'
             f'<div class="w">{title}{kind_html}</div>'
             f'<div class="m"><span class="at">{esc(due_label(local, now))}</span>'
             f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div></div>'
             f'<form method="post" action="/done">'
             f'<input type="hidden" name="id" value="{esc(row["id"])}">'
             f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
-            f'</form></div>')
+            f'</form>{delete}</div>')
     if beyond:
         plural = "" if beyond == 1 else "s"
         out.append(f'<div class="more">{beyond} more piece{plural} of work further out</div>')
     return "".join(out)
+
+
+def render_personal(rows, now, tz):
+    """Undated notes he added. Dated ones live in Due with the rest of the work,
+    because a thing with a deadline belongs next to the other things with
+    deadlines regardless of who typed it in."""
+    out = []
+    for row in rows or []:
+        if row["due_utc"]:
+            continue
+        out.append(
+            f'<div class="it local"><div><div class="w">{esc(row["title"])}</div></div>'
+            f'<form method="post" action="/done">'
+            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
+            f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
+            f'</form>'
+            f'<form method="post" action="/delete">'
+            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
+            f'<button class="del" type="submit" aria-label="Delete">&times;</button>'
+            f'</form></div>')
+    out.append(
+        '<form class="addf" method="post" action="/add">'
+        '<input type="text" name="title" placeholder="Add something of your own" '
+        'aria-label="What to add" maxlength="200">'
+        '<input type="date" name="due" aria-label="Due date (optional)">'
+        '<button type="submit">Add</button></form>')
+    return "".join(out)
+
+
+def render_exams(schedule, now, tz):
+    """Final exam times, once they exist.
+
+    Canvas has no exam schedule and the registrar publishes it partway through
+    the term, so this stays empty until the dates are put into schedule.json
+    under "exams": [{course, date, start, end, room}].
+    """
+    rows = schedule.get("exams") or []
+    if not rows:
+        return ""
+    out = []
+    for row in sorted(rows, key=lambda r: (r.get("date", ""), r.get("start", ""))):
+        try:
+            day = date.fromisoformat(row["date"])
+        except (KeyError, ValueError):
+            continue
+        when = day.strftime("%a %-d %B")
+        clock = f'{row.get("start", "")}&ndash;{row.get("end", "")}'.strip("&ndash;")
+        days_off = (day - now.date()).days
+        soon = " soon" if 0 <= days_off <= 14 else ""
+        out.append(f'<div class="it{soon}"><div>'
+                   f'<div class="w">{esc(row.get("course", ""))} '
+                   f'<span class="kd">{esc(row.get("room", ""))}</span></div>'
+                   f'<div class="m"><span class="at">{esc(when)} {clock}</span></div>'
+                   f'</div><div></div></div>')
+    return "".join(out)
+
+
+def render_sources(rows):
+    """Ages, so a source that has quietly stopped is visible rather than implied."""
+    parts = []
+    for row in rows or []:
+        cls = "s old" if row["stale"] else "s"
+        parts.append(f'<span class="{cls}"><b>{esc(row["name"])}</b> {esc(row["label"])}</span>')
+    return f'<span class="srcs">{"".join(parts)}</span>'
 
 
 def render_completed(rows, now, tz, limit=8, colours=None):
@@ -707,13 +822,15 @@ def render_appointments(rows, now, tz, limit=6, colours=None):
 
 # ------------------------------------------------------------------- shell
 
-def _shell(title, inner, refresh=None):
+def _shell(title, inner, refresh=None, theme="light"):
     meta = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
+    extra_css = DARK_CSS if theme == "auto" else ""
+    scheme = "light dark" if theme == "auto" else "light"
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="{scheme}">
 <meta name="theme-color" content="#F3F4F6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -721,7 +838,7 @@ def _shell(title, inner, refresh=None):
 <link rel="manifest" href="/manifest.webmanifest">
 {meta}
 <title>{esc(title)}</title>
-<style>{CSS}</style>
+<style>{CSS}{extra_css}</style>
 </head><body><div class="wrap">
 {inner}
 </div></body></html>"""
@@ -754,7 +871,7 @@ def card(heading, content, sub="", extra="", cls=""):
 
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
          grades="", changed="", appts="", week=None, workload=None, completed="",
-         focus_day=None):
+         focus_day=None, personal="", sources="", walk_minutes=0, theme="light"):
     colours = colour_map(schedule)
     workload = workload or {}
     monday = week or monday_of(focus_day or now.date())
@@ -777,10 +894,13 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     else:
         work = '<div class="empty">Nothing due in the next stretch. Enjoy it.</div>'
     changed_block = f'<div class="chg">{changed}</div>' if changed.strip() else ""
+    mine = card("Mine", personal, cls="rv d4")
+    mine_block = f'<div style="margin-top:16px">{mine}</div>' if mine else ""
     finished = card("Finished", completed, cls="rv d5")
     finished_block = f'<div style="margin-top:16px">{finished}</div>' if finished else ""
 
     side = "".join([
+        card("Exams", render_exams(schedule, now, tz)),
         card("Calendar", appts),
         card("Course mail", mails),
         card("Announcements", anns),
@@ -792,7 +912,7 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
   <span class="stamp"><b>{now.strftime('%A %-d %B')}</b> &nbsp; <span class="n">{now.strftime('%-I:%M %p').lower()}</span></span>
 </div>
 
-<div class="rv d1">{hero(schedule, now, tz, colours)}</div>
+<div class="rv d1">{hero(schedule, now, tz, colours, walk_minutes)}</div>
 <div class="rv d2">{day_chips(schedule, monday, tz, now, workload)}</div>
 
 <div class="cols">
@@ -806,6 +926,7 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
       <div class="ch"><h2>Due</h2></div>
       {changed_block}{work}
     </section>
+    {mine_block}
     {finished_block}
   </div>
   <div class="side rv d4">{side}</div>
@@ -813,5 +934,5 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
 
 {term_progress(schedule, workload, now.date())}
 
-<footer><span>{esc(sync_note)}</span><span>{esc(now.strftime('%Z'))}</span></footer>""",
-                  refresh=refresh)
+<footer>{sources or f'<span>{esc(sync_note)}</span>'}<span>{esc(now.strftime('%Z'))}</span></footer>""",
+                  refresh=refresh, theme=theme)

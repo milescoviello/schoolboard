@@ -64,13 +64,26 @@ def main():
               lambda m=monday, n=now: render.page(schedule, n, tz, tasks, "", "t", True,
                                                   week=m, workload=workload))
 
+    # The pieces added later: personal items, source ages, leave-by, dark theme.
+    personal = render.render_personal(store.personal(conn), datetime.now(tz), tz)
+    from schoolboard import status  # noqa: E402
+    sources = render.render_sources(status.sources(config.load_config(), conn, store.get_meta))
+    for theme in ("light", "auto"):
+        for walk in (0, 10):
+            for hour in (7, 8, 13, 23):
+                now = datetime(2026, 9, 10, hour, 20, tzinfo=tz)
+                check(f"theme={theme} walk={walk} {hour:02d}h",
+                      lambda n=now, t=theme, w=walk: render.page(
+                          schedule, n, tz, tasks, "", "t", True, workload=workload,
+                          personal=personal, sources=sources, walk_minutes=w, theme=t))
+
     # Empty data, which is what a fresh install looks like.
     check("no data", lambda: render.page(schedule, datetime.now(tz), tz, "", "", "t", False))
     check("login", lambda: render.login_page())
     check("login error", lambda: render.login_page(error="nope"))
     check("login throttled", lambda: render.login_page(retry_after=900))
 
-    total = 7 * 24 + 6 + 4
+    total = 7 * 24 + 6 + (2 * 2 * 4) + 4
     if FAIL:
         print(f"FAILED {len(FAIL)} of {total}")
         for label, why in FAIL[:12]:

@@ -180,13 +180,62 @@ def build_messages(conn, schedule, cfg, now, tz):
                 ))
                 break
 
-    # 3. A morning digest, once a day.
+    # 3. Anything that has gone quiet. A source that stops updating leaves the
+    #    board looking healthy while showing stale data, so it has to speak up.
+    from . import status
+    for row in status.stale_sources(cfg, conn, store.get_meta):
+        out.append((
+            f"stale:{row['name']}:{now.date().isoformat()}",
+            f"<b>{_esc(row['name'])} has gone quiet</b>\n"
+            f"Last update {_esc(row['label'])}."
+            + (f"\n{_esc(row['note'])}" if row["note"] else ""),
+            True,   # deliver even in quiet hours: it means the board is lying
+        ))
+
+    # 4. A Sunday evening look at the week ahead.
+    week_hour = nc.get("weekly_hour")
+    if week_hour is not None and now.weekday() == 6 and now.hour >= int(week_hour):
+        out.append((f"weekly:{now.date().isoformat()}",
+                    weekly_text(conn, schedule, now, tz), False))
+
+    # 5. A morning digest, once a day.
     digest_hour = nc.get("digest_hour")
     if digest_hour is not None and now.hour >= int(digest_hour):
         out.append((f"digest:{now.date().isoformat()}",
                     digest_text(conn, schedule, now, tz), False))
 
     return out
+
+
+def weekly_text(conn, schedule, now, tz):
+    """Sunday evening: the shape of the week that starts tomorrow."""
+    monday = now.date() + timedelta(days=1)
+    lines = [f"<b>Week of {monday.strftime('%-d %B')}</b>"]
+    for offset in range(5):
+        day = monday + timedelta(days=offset)
+        reason = timetable.no_class_reason(schedule, day)
+        meetings = timetable.meetings_on(schedule, day, tz)
+        if reason:
+            lines.append(f"  {day.strftime('%a')}  {_esc(reason)}")
+        elif meetings:
+            codes = " ".join(m.code for m in meetings)
+            lines.append(f"  {day.strftime('%a')}  {_esc(codes)}")
+        else:
+            lines.append(f"  {day.strftime('%a')}  clear")
+    horizon = now + timedelta(days=8)
+    due = []
+    for row in store.upcoming(conn, limit=40):
+        when = _parse(row["due_utc"])
+        if not when:
+            continue
+        local = when.astimezone(tz)
+        if now < local <= horizon:
+            due.append(f"  {local.strftime('%a')} &mdash; {_esc(row['title'])}")
+    if due:
+        lines.append("")
+        lines.append(f"<b>{len(due)} due this week</b>")
+        lines.extend(due[:10])
+    return "\n".join(lines)
 
 
 def digest_text(conn, schedule, now, tz):
