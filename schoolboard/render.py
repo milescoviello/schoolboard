@@ -462,8 +462,8 @@ def week_grid(schedule, monday, tz, colours, now):
 
     if monday <= now.date() <= monday + timedelta(days=4):
         minutes = now.hour * 60 + now.minute
-        if GRID_START_MIN <= minutes <= GRID_END_MIN:
-            cells.append(f'<div class="nb" style="grid-row:{_row(minutes)}">'
+        if low <= minutes <= high:
+            cells.append(f'<div class="nb" style="grid-row:{_row(minutes, low)}">'
                          f'<span class="n">{now.strftime("%-I:%M")}</span></div>')
 
     rows = (high - low) // SLOT
