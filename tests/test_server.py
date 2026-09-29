@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -87,6 +88,12 @@ class TrustedTest(ServerTest):
             conn.close()
             self.assertEqual(r.status, 413, length)
 
+    def test_head_has_no_side_effects(self):
+        with mock.patch.object(server, "work_items") as work:
+            self.assertEqual(self.request("HEAD", "/work.json")[0].status, 405)
+            self.assertEqual(self.request("HEAD", "/logout")[0].status, 405)
+        work.assert_not_called()
+
     def test_odd_query_values_fall_back(self):
         with mock.patch.object(server, "build_page", return_value="<html>" + "x" * 3000) as build:
             self.assertEqual(self.request("GET", "/?week=0001-01-01")[0].status, 200)
@@ -132,6 +139,74 @@ class PublicTest(ServerTest):
         self.assertEqual(auth.client_key("2001:db8::1"), auth.client_key("2001:db8::ffff"))
 
 
+SCHEDULE = {"term": "Fall 2026", "term_start": "2026-09-09", "term_end": "2026-12-13", "timezone": "America/Los_Angeles",
+            "no_class_days": [], "courses": [{"code": "PHIL 1000", "title": "Ethics", "days": ["Mon", "Thu"],
+                                              "start": "08:45", "end": "10:25", "room": "Room 1"}]}
+
+
+class PageTest(PublicTest):
+    """What the browser pass on phone and desktop turned up. The whole page,
+    so the full default config and an invented timetable (schedule.json is
+    private and not in the repo)."""
+    cfg = dict(json.loads(json.dumps(config.DEFAULTS)), auth={"password_hash": HASH, "session_secret": "s"})
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(config, "load_schedule", return_value=SCHEDULE)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def page(self):
+        r, body = self.request("GET", "/", Cookie=f"{auth.COOKIE}={auth.issue('s')}")
+        self.assertEqual(r.status, 200)
+        return body.decode()
+
+    def test_the_manifest_loads_before_login(self):
+        r, body = self.request("GET", "/manifest.webmanifest")
+        self.assertEqual((r.status, json.loads(body)["start_url"]), (200, "/"))
+
+    def test_sign_out_is_offered_here_only(self):
+        self.assertIn('href="/logout"', self.page())
+
+    def test_no_token_still_lists_work_of_his_own(self):
+        conn = store.connect()
+        store.add_personal(conn, "Email advisor", (datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+        conn.close()
+        html = self.page()
+        self.assertTrue("Canvas isn" in html and "Email advisor" in html)
+
+    def test_a_ticked_undated_item_can_be_reopened(self):
+        conn = store.connect()
+        item_id = store.add_personal(conn, "Buy a notebook")
+        conn.execute("UPDATE items SET done=1 WHERE id=?", (item_id,))
+        conn.commit()
+        conn.close()
+        html = self.page()
+        self.assertIn("Buy a notebook", html.split("Finished", 1)[1])
+
+    def test_a_tick_that_missed_canvas_says_so(self):
+        conn = store.connect()
+        store.upsert_items(conn, [{"id": "canvas:assignment:1", "source": "canvas", "kind": "assignment",
+                                   "course": "X", "title": "HW", "due_utc": "2026-09-20T00:00:00Z", "done": 1}])
+        store.set_pending(conn, "canvas:assignment:1", True)
+        conn.close()
+        self.assertIn("not in Canvas yet", self.page())
+
+
+class TrustedPageTest(ServerTest):
+    cfg = PageTest.cfg
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(config, "load_schedule", return_value=SCHEDULE)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_no_sign_out_where_there_is_no_session(self):
+        r, body = self.request("GET", "/")
+        self.assertNotIn(b'href="/logout"', body)
+
+
 class NoPasswordTest(ServerTest):
     handler = server.PublicHandler
     cfg = {"auth": {"password_hash": "", "session_secret": "s"}}
@@ -145,7 +220,7 @@ class NoPasswordTest(ServerTest):
 
 
 class ConfigTest(unittest.TestCase):
-    def test_save_is_atomic_private_and_minimal(self):
+    def test_save_is_atomic_and_private(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, "ROOT", Path(tmp)), \
                 mock.patch.dict(os.environ, {"SCHOOLBOARD_CANVAS_TOKEN": "from-env"}):
             (Path(tmp) / "config.json").write_text(json.dumps({"canvas": {"token": "on-disk"}}))
@@ -157,6 +232,16 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(saved, {"auth": {"password_hash": "h"}, "canvas": {"token": "on-disk"}})
         self.assertEqual(mode, 0o600)
         self.assertEqual(config.DEFAULTS["auth"]["password_hash"], "")
+
+    def test_a_pinned_value_survives_a_save(self):
+        # Equal to today's default, but set on purpose: it must stay in the file.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, "ROOT", Path(tmp)):
+            (Path(tmp) / "config.json").write_text(json.dumps({"public_port": config.DEFAULTS["public_port"]}))
+            cfg = config.load_config()
+            cfg["walk_minutes"] = 12
+            config.save_config(cfg)
+            saved = json.loads((Path(tmp) / "config.json").read_text())
+        self.assertEqual(saved, {"public_port": config.DEFAULTS["public_port"], "walk_minutes": 12})
 
 
 if __name__ == "__main__":

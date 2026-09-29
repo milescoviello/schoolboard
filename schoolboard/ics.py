@@ -280,6 +280,11 @@ def collect(feeds, days_back=1, days_ahead=45, tz=timezone.utc, now=None):
     items, notes, ok = [], [], []
     for feed in feeds or []:
         name, url = feed.get("name") or "Calendar", feed.get("url")
+        # Two feeds with one name would share row ids, and a clean fetch of one
+        # would delete the other's rows while it was failing.
+        base, n = name, 2
+        while name in ok or any(note.startswith(f"{name}:") for note in notes):
+            name, n = f"{base} {n}", n + 1
         if not url:
             continue
         try:

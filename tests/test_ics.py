@@ -132,5 +132,13 @@ class FeedTest(unittest.TestCase):
         self.assertEqual([it["title"] for it in items], ["Fine"])
 
 
+class SharedNameTest(unittest.TestCase):
+    def test_two_unnamed_feeds_keep_apart(self):
+        from unittest import mock
+        with mock.patch.object(ics, "fetch", return_value="BEGIN:VCALENDAR\nEND:VCALENDAR"):
+            _, note, ok = ics.collect([{"url": "a"}, {"url": "b"}])
+        self.assertEqual(ok, ["Calendar", "Calendar 2"])
+
+
 if __name__ == "__main__":
     unittest.main()

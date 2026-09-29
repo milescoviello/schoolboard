@@ -33,6 +33,7 @@ class Canvas:
         self.base = base_url.rstrip("/")
         self.token = token
         self.ctx = ssl.create_default_context()
+        self.truncated = False
 
     def _request(self, url):
         req = urllib.request.Request(url, headers={
@@ -59,7 +60,9 @@ class Canvas:
             raise CanvasError(f"Canvas request failed: {type(exc).__name__}: {exc}") from exc
 
     def get(self, path, **params):
-        """GET with Link-header pagination followed to the end."""
+        """GET with Link-header pagination followed to the end. `truncated` is
+        set if the page cap stopped it first, so nothing treats a partial
+        listing as the whole of it."""
         params.setdefault("per_page", 100)
         url = f"{self.base}/api/v1/{path.lstrip('/')}?{urllib.parse.urlencode(params, doseq=True)}"
         out = []
@@ -69,6 +72,7 @@ class Canvas:
             out.extend(data if isinstance(data, list) else [data])
             url = _next_link(link)
             seen += 1
+        self.truncated = bool(url)
         return out
 
     def profile(self):
@@ -303,6 +307,9 @@ def collect(base_url, token, schedule):
     courses = api.courses()
     labels = course_labeller(courses, schedule)
     planner = api.planner()
+    # Whether this is the whole planner window: retiring what it lacks is only
+    # safe then, and an empty answer from an account with courses isn't.
+    complete = not api.truncated and bool(planner or not courses)
     items = normalise_planner(planner, labels, base_url)
     notes = []
     try:
@@ -311,7 +318,7 @@ def collect(base_url, token, schedule):
     except CanvasError as exc:
         # Announcements are a bonus; never let them fail the whole sync.
         notes.append(f"announcements skipped: {exc}")
-    return items, {"courses": len(courses), "planner": len(planner),
+    return items, {"courses": len(courses), "planner": len(planner), "complete": complete,
                    "items": len(items), "notes": notes,
                    "grades": grades(courses, labels)}
 

@@ -89,8 +89,8 @@ def load_config():
 
 
 def _changed(cfg, base):
-    """What in `cfg` differs from `base`. A save keeps the user's own settings,
-    not a frozen copy of every default that a later default can't reach."""
+    """What in `cfg` differs from `base`, so a save doesn't freeze a copy of
+    every default into the file where a later default can't reach it."""
     out = {}
     for key, value in cfg.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -108,15 +108,18 @@ def save_config(cfg):
     loading mid-write read half a file and 500'd."""
     path = ROOT / "config.json"
     cfg = json.loads(json.dumps(cfg))
+    on_disk = json.loads(path.read_text()) if path.exists() else {}
     injected = os.environ.get("SCHOOLBOARD_CANVAS_TOKEN")
     if injected and cfg.get("canvas", {}).get("token") == injected:
         # Injected so that it needn't touch disk; keep what the file had.
-        on_disk = json.loads(path.read_text()) if path.exists() else {}
         cfg["canvas"]["token"] = (on_disk.get("canvas") or {}).get("token", "")
+    # The file's own settings stay, even one that equals today's default (a
+    # pinned port must survive the default changing); only changes are added.
+    changes = _changed(cfg, _merge(copy.deepcopy(DEFAULTS), on_disk))
     tmp = path.with_name(".config.json.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as out:
-        out.write(json.dumps(_changed(cfg, DEFAULTS), indent=2) + "\n")
+        out.write(json.dumps(_merge(on_disk, changes), indent=2) + "\n")
     os.replace(tmp, path)
     return path
 

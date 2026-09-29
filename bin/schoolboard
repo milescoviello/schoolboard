@@ -176,7 +176,7 @@ def cmd_status(args):
     grades = store.get_meta(conn, "grades") or []
     print(f"grades       {len(grades)} courses reporting")
     print(f"mail dropped {store.get_meta(conn, 'mail_dropped', 0)} (see mail-dropped.log)")
-    gated = "set" if (cfg.get("auth") or {}).get("password_hash") else "NOT SET (public URL is open)"
+    gated = "set" if (cfg.get("auth") or {}).get("password_hash") else "NOT SET (public URL refuses everyone)"
     print(f"serving on   http://{cfg['bind']}:{cfg['port']} (trusted) "
           f"+ 127.0.0.1:{cfg.get('public_port')} (public, login {gated})")
 

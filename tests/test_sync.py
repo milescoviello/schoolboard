@@ -66,6 +66,12 @@ class UpcomingTest(StoreTest):
         self.assertEqual(store.recently_changed(self.conn), [])
         self.assertIsNone(store.get_meta(self.conn, "changed_baseline"))
 
+    def test_retire_refuses_a_partial_answer(self):
+        store.upsert_items(self.conn, [item(f"canvas:assignment:{i}", "2026-10-02T12:00:00Z") for i in range(20)])
+        self.assertIsNone(store.retire(self.conn, "canvas", {"canvas:assignment:0"},
+                                       "2026-10-01T00:00:00+00:00", "2026-11-01T00:00:00+00:00"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0], 20)
+
     def test_retire_removes_only_what_the_window_lost(self):
         store.upsert_items(self.conn, [item("canvas:assignment:kept", "2026-10-02T12:00:00Z"),
                                        item("canvas:assignment:deleted", "2026-10-03T12:00:00Z"),
@@ -86,6 +92,12 @@ class NotifyTest(StoreTest):
         store.upsert_items(self.conn, [item("canvas:assignment:essay", "2026-10-10T03:59:59Z")])
         again = self.keys(datetime(2026, 10, 9, 18, 0, tzinfo=LA))
         self.assertEqual(again, ["due:canvas:assignment:essay:3h:2026-10-10T03:59:59Z"])
+
+    def test_a_warning_sent_after_the_move_is_not_repeated(self):
+        store.upsert_items(self.conn, [item("canvas:assignment:essay", "2026-10-07T03:59:59Z")])
+        store.upsert_items(self.conn, [item("canvas:assignment:essay", "2026-10-10T03:59:59Z")])
+        notify.mark_sent(self.conn, "due:canvas:assignment:essay:3h", "sent under the old key, after the move")
+        self.assertEqual(self.keys(datetime(2026, 10, 9, 18, 0, tzinfo=LA)), ["due:canvas:assignment:essay:3h"])
 
     def test_quiet_hours_hold_what_can_wait(self):
         # Synced at 23:10, due tomorrow evening: the 24h warning can wait for 07:00.
@@ -174,6 +186,12 @@ class LectureMatchTest(StoreTest):
                                             title="Essay 1 final submission")])
         self.assertEqual(self.collect("Bring a printed copy of your essay", "bring a printed copy"), {})
 
+    def test_a_spelled_count_is_not_a_number(self):
+        store.upsert_items(self.conn, [item("canvas:assignment:1", "2026-10-02T03:59:59Z",
+                                            title="Week 4: articles on driverless cars")])
+        self.assertEqual(list(self.collect("Read two articles on driverless cars", "read two of the articles")),
+                         ["canvas:assignment:1"])
+
     def test_spelled_number_is_checked(self):
         store.upsert_items(self.conn, [item("canvas:assignment:1", "2026-10-02T03:59:59Z", title="Homework 2")])
         self.assertEqual(self.collect("Homework three", "homework three is due"), {})
@@ -224,6 +242,12 @@ class CollectorTest(StoreTest):
         labels = canvas.course_labeller([{"id": 1, "course_code": "CS2001 Lab for CS2000 MERGED"}], schedule)
         self.assertEqual(labels, {1: "CS 2001"})
 
+    def test_a_hyphenated_surname_still_matches(self):
+        schedule = {"courses": [{"code": "PHIL 1000", "instructor": "Ana Ruiz-Delgado"}]}
+        codes, names = mail.build_matchers(schedule)
+        self.assertEqual(mail.classify({"sender": "Ana Ruiz-Delgado", "from_address": "j.c@example.edu"},
+                                       codes, names), ("PHIL 1000", "instructor"))
+
     def test_surname_must_be_a_whole_word(self):
         codes, names = mail.build_matchers(SCHEDULE)
         self.assertEqual(mail.classify({"sender": "Min-jun Hwang", "from_address": "mh@example.edu"}, codes, names),
@@ -256,19 +280,60 @@ class SyncTest(StoreTest):
         self.assertIn("mail: no drop file yet", note)
         self.assertIsNotNone(store.get_meta(self.conn, "last_sync"))
 
+    CFG = {"canvas": {"token": "t", "base_url": "https://c.example"}}
+
     def test_a_tick_that_missed_canvas_is_retried(self):
         store.upsert_items(self.conn, [item("canvas:assignment:7", "2026-10-06T03:00:00Z")])
-        cfg = {"canvas": {"token": "t", "base_url": "https://c.example"}}
         with mock.patch.object(canvas, "set_complete", side_effect=canvas.CanvasError("503")):
-            server.mark_item("canvas:assignment:7", done=True, cfg=cfg)
-        self.assertEqual(store.get_meta(self.conn, server.PENDING_META), {"canvas:assignment:7": True})
-        # The next sync reads "not done" back from Canvas, then retries the tick.
+            server.mark_item("canvas:assignment:7", done=True, cfg=self.CFG)
+        self.assertEqual(store.pending(self.conn), {"canvas:assignment:7": True})
+        # The next sync reads "not done" from Canvas; the pending tick holds.
         store.upsert_items(self.conn, [item("canvas:assignment:7", "2026-10-06T03:00:00Z", done=0)])
-        with mock.patch.object(canvas, "set_complete") as sent:
-            server._retry_pending(self.conn, cfg)
-        sent.assert_called_once()
-        self.assertEqual(store.get_meta(self.conn, server.PENDING_META), {})
         self.assertEqual(self.conn.execute("SELECT done FROM items").fetchone()["done"], 1)
+        with mock.patch.object(canvas, "set_complete") as sent:
+            self.assertEqual(server._retry_pending(self.conn, self.CFG), 0)
+        sent.assert_called_once()
+        self.assertEqual(store.pending(self.conn), {})
+
+    def test_the_retry_holds_no_lock_while_canvas_answers(self):
+        store.upsert_items(self.conn, [item(f"canvas:assignment:{i}", "2026-10-06T03:00:00Z") for i in (1, 2)])
+        for i in (1, 2):
+            store.set_pending(self.conn, f"canvas:assignment:{i}", True)
+
+        def meanwhile(*a, **k):
+            other = store.connect()
+            other.execute("PRAGMA busy_timeout=100")
+            other.execute("INSERT INTO notifications VALUES (?, 'now', '')", (f"k{a[3]}",))
+            other.commit()
+            other.close()
+            raise canvas.CanvasError("slow, then 503")   # the path that counts a try
+        with mock.patch.object(canvas, "set_complete", side_effect=meanwhile):
+            server._retry_pending(self.conn, self.CFG)   # "database is locked" if it did
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0], 2)
+
+    def test_an_untick_during_the_retry_is_kept(self):
+        store.upsert_items(self.conn, [item("canvas:assignment:7", "2026-10-06T03:00:00Z")])
+        store.set_pending(self.conn, "canvas:assignment:7", True)
+        other = store.connect()
+        with mock.patch.object(canvas, "set_complete",
+                               side_effect=lambda *a, **k: store.set_pending(other, "canvas:assignment:7", False)):
+            server._retry_pending(self.conn, self.CFG)
+        other.close()
+        self.assertEqual(store.pending(self.conn), {"canvas:assignment:7": False})
+
+    def test_a_tick_for_a_vanished_item_is_dropped(self):
+        store.set_pending(self.conn, "canvas:assignment:gone", True)
+        with mock.patch.object(canvas, "set_complete") as sent:
+            server._retry_pending(self.conn, self.CFG)
+        sent.assert_not_called()
+        self.assertEqual(store.pending(self.conn), {})
+
+    def test_an_unopenable_lock_file_does_not_wedge_syncing(self):
+        with mock.patch.object(server.os, "open", side_effect=PermissionError("root-owned")):
+            with self.assertRaises(PermissionError):
+                server.sync_once({}, {})
+        self.assertNotEqual(server.sync_once({"timezone": "UTC", "canvas": {"token": ""}, "scribe_index": "/x"},
+                                             SCHEDULE), "sync already running")
 
 
 if __name__ == "__main__":

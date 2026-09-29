@@ -80,10 +80,14 @@ def _words(text):
 
 _SPELLED = {w: str(n) for n, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve"
                                               .split()) if n >= 2}   # not "one": "read one of the articles"
+# A spelled number names something only after a word like these: "homework
+# three" is Homework 3, but "read two articles" is a count, not article 2.
+_NAMED = re.compile(r"\b(?:homework|hw|problem set|pset|quiz|lab|essay|chapter|lecture|exam|midterm|project|"
+                    r"assignment|week|unit|part|module|reflection|draft)\s+(" + "|".join(_SPELLED) + r")\b")
 
 
 def _numbers(text):
-    return set(re.findall(r"\d+", text)) | {_SPELLED[w] for w in re.findall(r"[a-z]+", text.lower()) if w in _SPELLED}
+    return set(re.findall(r"\d+", text)) | {_SPELLED[w] for w in _NAMED.findall(text.lower())}
 
 
 def _utc(value):

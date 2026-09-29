@@ -63,9 +63,11 @@ def classify(message, codes, names):
             if norm_code in blob:
                 return pretty, reason
     # Whole words only: as a substring, "WANG" matched Hwang, Swanger Housing
-    # and NewAngle Media, and filed them all as that instructor's course.
-    sender_words = set(re.findall(r"[A-Z0-9]+", f"{message.get('sender','')} "
-                                                f"{message.get('from_address','')}".upper()))
+    # and NewAngle Media, and filed them all as that instructor's course. A
+    # hyphen or apostrophe stays inside its word and is then dropped, as
+    # surname() does, so Ruiz-Delgado is still RUIZDELGADO.
+    sender_words = {_norm(w) for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9'\-]*",
+                                                 f"{message.get('sender','')} {message.get('from_address','')}")}
     for name, code in names.items():
         if name in sender_words:
             return code, "instructor"

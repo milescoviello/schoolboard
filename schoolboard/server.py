@@ -7,6 +7,7 @@ on screen with an honest "last synced" line in the footer.
 import fcntl
 import html
 import json
+import os
 import re
 import socket
 import struct
@@ -38,15 +39,21 @@ def sync_once(cfg=None, schedule=None):
     """
     if not _SYNC_LOCK.acquire(blocking=False):
         return "sync already running"
-    lockfile = open(store.DB_PATH.with_name("sync.lock"), "w")
+    fd = None
     try:
+        # Read-only, and inside the try. A sync.lock left root-owned by `sudo
+        # schoolboard sync` can't be opened for writing; opened outside the
+        # try, that one failure kept the thread lock held and every later sync
+        # said "already running" until a restart. flock doesn't need write.
+        fd = os.open(store.DB_PATH.with_name("sync.lock"), os.O_RDONLY | os.O_CREAT, 0o644)
         try:
-            fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             return "sync already running (another process)"
         return _sync(cfg or config.load_config(), schedule or config.load_schedule())
     finally:
-        lockfile.close()
+        if fd is not None:
+            os.close(fd)
         _SYNC_LOCK.release()
 
 
@@ -78,12 +85,18 @@ def _sync(cfg, schedule):
         new, updated = store.upsert_items(conn, items)
         # The planner window is 14 days back and 45 ahead; retire only inside
         # it, a day in from each edge, since its bounds are whole UTC dates.
-        gone = store.retire(conn, "canvas", {it["id"] for it in items},
-                            (now - timedelta(days=13)).isoformat(), (now + timedelta(days=44)).isoformat())
-        _retry_pending(conn, cfg)
+        gone = 0
+        if report.get("complete"):
+            gone = store.retire(conn, "canvas", {it["id"] for it in items},
+                                (now - timedelta(days=13)).isoformat(), (now + timedelta(days=44)).isoformat())
+        waiting = _retry_pending(conn, cfg)
         note = f"Canvas: {report['courses']} courses, {new} new, {updated} updated"
-        if gone:
+        if gone is None:
+            note += ", kept rows it didn't list (too many to be real)"
+        elif gone:
             note += f", {gone} gone"
+        if waiting:
+            note += f", {waiting} tick{'' if waiting == 1 else 's'} still to reach Canvas"
         if report["notes"]:
             note += " (" + "; ".join(report["notes"]) + ")"
         store.set_meta(conn, "grades", report.get("grades") or [])
@@ -147,24 +160,31 @@ def _sync(cfg, schedule):
         conn.close()
 
 
-PENDING_META = "pending_done"
+PENDING_TRIES = 96   # a day of syncs; Canvas refusing that long is not an outage
 
 
 def _retry_pending(conn, cfg):
-    """Ticks that reached only this database, sent to Canvas again. Without
-    this the next sync read Canvas's "not done" back over them, and the item
-    returned to Due soon."""
-    pending = store.get_meta(conn, PENDING_META) or {}
-    for item_id, done in list(pending.items()):
+    """Ticks that reached only this database, sent to Canvas again. Returns
+    how many are still waiting.
+
+    Nothing is held open across a request: a transaction left open while
+    Canvas took its time locked out every other writer, so a sent reminder
+    couldn't be recorded (and went again) and a tick or an add failed. A tick
+    whose item is gone upstream, or that Canvas has refused for a day, is
+    dropped rather than retried forever."""
+    for item_id, done, tries in conn.execute("SELECT id, done, tries FROM pending").fetchall():
+        if tries >= PENDING_TRIES or conn.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone() is None:
+            store.clear_pending(conn, item_id)
+            continue
         _, kind, native = item_id.split(":")[:3]
         try:
-            canvas.set_complete(cfg["canvas"]["base_url"], cfg["canvas"]["token"], kind, native, complete=done)
-            del pending[item_id]
+            canvas.set_complete(cfg["canvas"]["base_url"], cfg["canvas"]["token"], kind, native, complete=bool(done))
         except canvas.CanvasError:
-            pass
-        conn.execute("UPDATE items SET done=? WHERE id=?", (1 if done else 0, item_id))
-    conn.commit()
-    store.set_meta(conn, PENDING_META, pending)
+            conn.execute("UPDATE pending SET tries=tries+1 WHERE id=? AND done=?", (item_id, done))
+            conn.commit()
+            continue
+        store.clear_pending(conn, item_id, done)
+    return conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
 
 
 def _sync_note(conn, cfg):
@@ -180,7 +200,7 @@ def _sync_note(conn, cfg):
     return f"synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
 
 
-def build_page(week=None, focus_day=None):
+def build_page(week=None, focus_day=None, public=False):
     cfg = config.load_config()
     schedule = config.load_schedule()
     tz = timetable.tzinfo(cfg["timezone"])
@@ -196,7 +216,8 @@ def build_page(week=None, focus_day=None):
         grades = render.render_grades(store.get_meta(conn, "grades") or [], colours=colours)
         changed = render.render_changed(store.recently_changed(conn), now, tz)
         appts = render.render_appointments(store.appointments(conn), now, tz, colours=colours)
-        completed = render.render_completed(store.completed(conn), now, tz, colours=colours)
+        completed = render.render_completed(store.completed(conn), now, tz, colours=colours,
+                                            pending=store.pending(conn))
         workload = store.workload(conn, tz)
         personal = render.render_personal(store.personal(conn), now, tz)
         sources = render.render_sources(status.sources(cfg, conn, store.get_meta))
@@ -210,7 +231,7 @@ def build_page(week=None, focus_day=None):
                        walk_minutes=cfg.get("walk_minutes", 0),
                        theme=cfg.get("theme", "light"),
                        canvas_ready=bool(cfg["canvas"]["token"]),
-                       refresh=cfg["refresh_seconds"])
+                       refresh=cfg["refresh_seconds"], sign_out=public)
 
 
 def next_meeting(cfg=None, schedule=None, now=None):
@@ -414,15 +435,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 left -= len(chunk)
 
+    # GET paths with no side effects. /sync syncs, /logout signs out and
+    # /work.json can fetch from Canvas and run pdftotext; a HEAD mustn't.
+    HEAD_SAFE = ("/", "/index.html", "/healthz", "/login", "/manifest.webmanifest", "/next.json", "/due.json")
+
     def do_HEAD(self):
-        """GET without the body, so an uptime check using HEAD sees what GET
-        would. /sync is the exception: a HEAD mustn't set off a sync."""
-        self.head_only = True
-        if self.path.split("?")[0] == "/sync":
+        """GET without the body, so an uptime check using HEAD sees what GET would."""
+        path = self.path.split("?")[0]
+        if path not in self.HEAD_SAFE and not path.startswith("/lectures/"):
             self.send_response(405)
             self.send_header("Allow", "GET")
             self.end_headers()
             return
+        self.head_only = True
         self.do_GET()
 
     # --- auth helpers ----------------------------------------------------
@@ -583,6 +608,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(detail, status=200 if ok else 500,
                            ctype="text/plain; charset=utf-8")
                 return
+            if path == "/manifest.webmanifest":
+                # Before the gate: the browser fetches it for the login page
+                # too, and behind it got the login page's HTML instead.
+                self._send(json.dumps({
+                    "name": "schoolboard", "short_name": "school",
+                    "start_url": "/", "display": "standalone",
+                    "background_color": "#16182A", "theme_color": "#16182A",
+                    "icons": [{"src": render.ICON, "sizes": "any", "type": "image/svg+xml"}],
+                }), ctype="application/manifest+json")
+                return
             if not self._authed():
                 self._to_login()
                 return
@@ -605,7 +640,7 @@ class Handler(BaseHTTPRequestHandler):
                     week -= timedelta(days=week.weekday())
                 elif focus:
                     week = focus - timedelta(days=focus.weekday())
-                self._send(build_page(week=week, focus_day=focus))
+                self._send(build_page(week=week, focus_day=focus, public=self.requires_auth))
             elif path == "/next.json":
                 self._send(json.dumps(next_meeting()), ctype="application/json")
             elif path == "/due.json":
@@ -622,12 +657,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._library(path)
             elif path == "/sync":
                 self._send(f"<pre>{sync_once()}</pre><p><a href='/'>back</a></p>")
-            elif path == "/manifest.webmanifest":
-                self._send(json.dumps({
-                    "name": "schoolboard", "short_name": "school",
-                    "start_url": "/", "display": "standalone",
-                    "background_color": "#16182A", "theme_color": "#16182A",
-                }), ctype="application/manifest+json")
             else:
                 self._send("<h1>404</h1>", status=404)
         except Exception:
@@ -649,19 +678,17 @@ def mark_item(item_id, done=True, cfg=None):
             return False, f"no item {item_id}"
         note = "locally"
         parts = item_id.split(":")
-        pending = store.get_meta(conn, PENDING_META) or {}
-        pending.pop(item_id, None)
         if parts[0] == "canvas" and len(parts) >= 3 and cfg["canvas"]["token"]:
             try:
                 canvas.set_complete(cfg["canvas"]["base_url"], cfg["canvas"]["token"],
                                     parts[1], parts[2], complete=done)
                 note = "in Canvas"
+                store.clear_pending(conn, item_id)
             except canvas.CanvasError as exc:
                 note = f"locally only for now ({exc}); the next sync will retry"
-                pending[item_id] = done
+                store.set_pending(conn, item_id, done)
         conn.execute("UPDATE items SET done=? WHERE id=?", (1 if done else 0, item_id))
         conn.commit()
-        store.set_meta(conn, PENDING_META, pending)
         verb = "done" if done else "not done"
         return True, f"{row['title']} marked {verb} {note}"
     finally:

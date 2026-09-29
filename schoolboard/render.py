@@ -97,7 +97,8 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .days{display:flex;gap:8px;margin:20px 0 4px;overflow-x:auto;padding-bottom:4px;
       scrollbar-width:none}
 .days::-webkit-scrollbar{display:none}
-.chip{flex:1 0 auto;min-width:60px;background:var(--card);border:1px solid var(--line);
+/* Shared widths, so a phone shows the whole week; below ~360px the row scrolls. */
+.chip{flex:1 1 0;min-width:40px;background:var(--card);border:1px solid var(--line);
       border-radius:var(--r2);padding:9px 6px 8px;text-align:center}
 .chip .w{font-size:11px;color:var(--mut);letter-spacing:.02em}
 .chip .n{display:block;font-size:19px;font-weight:600;margin-top:1px;letter-spacing:-.02em}
@@ -113,7 +114,9 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .chip.today:hover{border-color:var(--ink)}
 
 /* --- cards --- */
-.cols{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+/* minmax(0,1fr), not 1fr: a 1fr track never shrinks below its widest child,
+   which pushed the phone layout to 499px and made the page scroll sideways. */
+.cols{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px}
 .card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
       padding:20px var(--pad2,22px)}
 .ch{display:flex;justify-content:space-between;align-items:center;gap:12px;
@@ -182,6 +185,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .it:last-child{border-bottom:0}
 .it .w{font-size:15.5px;line-height:1.35}
 .it .kd{color:var(--mut);font-size:13px}
+.it .q{color:var(--ink2);font-size:13px;font-style:italic;margin-top:4px;line-height:1.35}
 .it .m{color:var(--mut);font-size:13px;margin-top:4px;display:flex;gap:8px;
        align-items:center;flex-wrap:wrap}
 .it .at{font-variant-numeric:tabular-nums}
@@ -269,6 +273,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .gate button:active{transform:scale(.985)}
 .gate .err{color:var(--late);font-size:14.5px;margin-bottom:12px}
 
+footer a{border-bottom:1px solid currentColor}
 footer{color:var(--mut);font-size:12px;padding:22px 2px 0;display:flex;
        justify-content:space-between;gap:12px;flex-wrap:wrap}
 
@@ -697,7 +702,7 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
     counted, not enumerated.
 
     `links` are lecture mentions matched to Canvas items (lectures.py): those
-    rows get an "also said in class" tag whose tooltip is what was said.
+    rows get an "also said in class" tag, and what was said under them.
 
     The cap is applied after the horizon, and whatever it holds back is
     counted. Capped first, a pile of overdue rows filled the column and pushed
@@ -728,13 +733,19 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
             out.append(f'<div class="grp{cls}">{esc(group)}</div>')
         kind = row["kind"]
         said = lectures.said_in_class(row, links or {})
+        heard = ""
         if said:
-            # No JS on this board, so what was said rides in a tooltip.
             quote = " / ".join(f"{lectures.which(s)} ({s['date']}): {s['what']} (“{s['quote']}”)" for s in said)
             label = kind if kind == lectures.KIND else "also said in class"
             kind_html = f' <span class="kd" title="{esc(quote)}">{esc(label)}</span>'
+            # A line of its own as well as the tooltip: the phone is the main
+            # device, and a phone can't hover.
+            heard = "".join(f'<div class="q">“{esc(s["quote"] or s["what"])}” &middot; {esc(lectures.which(s))}</div>'
+                            for s in said[:2])
         else:
             kind_html = f' <span class="kd">{esc(kind)}</span>' if kind != "assignment" else ""
+        # Every heading but Overdue already names the day, so the clock is enough.
+        at = due_label(local, now) if group == "Overdue" else local.strftime("%-I:%M %p").lower()
         title = link(esc(row["title"]), row["url"])
         mine = row["source"] == "local"
         delete = ("" if not mine else
@@ -745,8 +756,8 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
         out.append(
             f'<div class="it {urgency(local, now)}{" local" if mine else ""}"><div>'
             f'<div class="w">{title}{kind_html}</div>'
-            f'<div class="m"><span class="at">{esc(due_label(local, now))}</span>'
-            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div></div>'
+            f'<div class="m"><span class="at">{esc(at)}</span>'
+            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div>{heard}</div>'
             f'<form method="post" action="/done">'
             f'<input type="hidden" name="id" value="{esc(row["id"])}">'
             f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
@@ -830,14 +841,18 @@ def render_sources(rows):
     return f'<span class="srcs">{"".join(parts)}</span>'
 
 
-def render_completed(rows, now, tz, limit=8, colours=None):
+def render_completed(rows, now, tz, limit=8, colours=None, pending=None):
+    """`pending`: ticks that reached only this board because Canvas didn't
+    answer. They say so until a sync gets them through, or the Canvas app
+    would disagree with the board and nothing would explain why."""
     out = []
     for row in (rows or [])[:limit]:
         due = parse_utc(row["due_utc"])
         when = due.astimezone(tz).strftime("%-d %b") if due else ""
+        waiting = ' <span class="kd">not in Canvas yet</span>' if row["id"] in (pending or ()) else ""
         out.append(
             f'<div class="it done"><div>'
-            f'<div class="w">{esc(row["title"])}</div>'
+            f'<div class="w">{esc(row["title"])}{waiting}</div>'
             f'<div class="m"><span class="at">{esc(when)}</span>'
             f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div></div>'
             f'<form method="post" action="/done">'
@@ -938,6 +953,13 @@ def render_appointments(rows, now, tz, limit=6, colours=None):
 
 # ------------------------------------------------------------------- shell
 
+# The brand dot on the page ground, inline so the icon costs no request and
+# /favicon.ico stops 404ing on every load.
+ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+        "%3Crect width='32' height='32' rx='8' fill='%2316182A'/%3E"
+        "%3Ccircle cx='16' cy='16' r='6' fill='%235FB3A1'/%3E%3C/svg%3E")
+
+
 def _shell(title, inner, refresh=None, theme="light"):
     meta = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
     extra_css = DARK_CSS if theme == "auto" else ""
@@ -949,9 +971,11 @@ def _shell(title, inner, refresh=None, theme="light"):
 <meta name="color-scheme" content="{scheme}">
 <meta name="theme-color" content="#F3F4F6">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="schoolboard">
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="{ICON}">
 {meta}
 <title>{esc(title)}</title>
 <style>{CSS}{extra_css}</style>
@@ -987,7 +1011,8 @@ def card(heading, content, sub="", extra="", cls=""):
 
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
          grades="", changed="", appts="", week=None, workload=None, completed="",
-         focus_day=None, personal="", sources="", walk_minutes=0, theme="light"):
+         focus_day=None, personal="", sources="", walk_minutes=0, theme="light", sign_out=False):
+    """`sign_out` on the public listener, the only one with a session to end."""
     colours = colour_map(schedule)
     workload = workload or {}
     monday = week or monday_of(focus_day or now.date())
@@ -1001,13 +1026,16 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     span = (f'{monday.strftime("%-d %b")} &ndash; '
             f'{(monday + timedelta(days=4)).strftime("%-d %b")}')
 
-    if not canvas_ready:
-        work = ('<div class="note">Canvas isn\'t connected, so nothing here knows about your '
-                'assignments. Create a token at <b>Canvas &rarr; Account &rarr; Settings &rarr; '
-                'New Access Token</b>, then run <code>schoolboard connect</code></div>')
-    elif tasks.strip():
-        work = tasks
-    else:
+    # The note goes above the list, not in place of it: work of his own and
+    # deadlines said in class only ever appear here, and with no token they
+    # used to vanish with no trace anywhere on the page.
+    work = "" if canvas_ready else (
+        '<div class="note">Canvas isn\'t connected, so nothing here knows about your '
+        'assignments. Create a token at <b>Canvas &rarr; Account &rarr; Settings &rarr; '
+        'New Access Token</b>, then run <code>schoolboard connect</code></div>')
+    if tasks.strip():
+        work += tasks
+    elif canvas_ready:
         work = '<div class="empty">Nothing due in the next stretch. Enjoy it.</div>'
     changed_block = f'<div class="chg">{changed}</div>' if changed.strip() else ""
     mine = card("Mine", personal, cls="rv d4")
@@ -1050,5 +1078,5 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
 
 {term_progress(schedule, workload, now.date())}
 
-<footer>{sources or f'<span>{esc(sync_note)}</span>'}<span>{esc(now.strftime('%Z'))}</span></footer>""",
+<footer>{sources or f'<span>{esc(sync_note)}</span>'}<span>{'<a href="/logout">Sign out</a> &middot; ' if sign_out else ''}{esc(now.strftime('%Z'))}</span></footer>""",
                   refresh=refresh, theme=theme)

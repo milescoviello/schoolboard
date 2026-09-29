@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS notifications (
     sent_at  TEXT NOT NULL,
     text     TEXT
 );
+-- Ticks that reached only this database, still to be written to Canvas.
+CREATE TABLE IF NOT EXISTS pending (
+    id     TEXT PRIMARY KEY,
+    done   INTEGER NOT NULL,
+    tries  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Added after the first release, so they arrive by migration rather than in SCHEMA.
@@ -68,12 +74,19 @@ def upsert_items(conn, items):
     """Insert or update. Returns (new, updated).
 
     One write transaction, taken up front: as a read then a write, two syncs
-    at once both saw a row missing and the second INSERT failed on its id."""
+    at once both saw a row missing and the second INSERT failed on its id.
+
+    A tick still waiting to reach Canvas keeps its state here: written over
+    with Canvas's "not done", it came back into Due, reminders and all, until
+    the retry got through."""
     now = _now()
     new = updated = 0
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
+    waiting = dict(conn.execute("SELECT id, done FROM pending").fetchall())
     for it in items:
+        if it["id"] in waiting:
+            it = dict(it, done=waiting[it["id"]])
         cur = conn.execute("SELECT due_utc FROM items WHERE id = ?", (it["id"],))
         row = cur.fetchone()
         if row is not None:
@@ -108,14 +121,39 @@ def retire(conn, source, seen, start_utc, end_utc, keep_kinds=NON_WORK_KINDS):
     """Delete `source` rows due in [start, end) that the last clean fetch of
     that window didn't return: deleted upstream, or moved out of it. Kept, they
     sat in Due soon for good, since nothing else ever looks at last_seen.
-    Only after a fetch that succeeded, or an outage would empty the board."""
+    Only after a fetch that succeeded, or an outage would empty the board.
+
+    Returns how many went, or None if it refused: more than half the window
+    at once (and more than a handful) is a partial answer, not a clear-out."""
     holes = ",".join("?" * len(keep_kinds))
     rows = conn.execute(f"SELECT id FROM items WHERE source=? AND kind NOT IN ({holes}) "
-                        f"AND due_utc >= ? AND due_utc < ?", (source, *keep_kinds, start_utc, end_utc))
+                        f"AND due_utc >= ? AND due_utc < ?", (source, *keep_kinds, start_utc, end_utc)).fetchall()
     gone = [r["id"] for r in rows if r["id"] not in seen]
+    if len(gone) > max(5, len(rows) // 2):
+        return None
     conn.executemany("DELETE FROM items WHERE id=?", [(i,) for i in gone])
     conn.commit()
     return len(gone)
+
+
+def pending(conn):
+    """{item id: done} for ticks not yet in Canvas."""
+    return {r["id"]: bool(r["done"]) for r in conn.execute("SELECT id, done FROM pending")}
+
+
+def set_pending(conn, item_id, done):
+    conn.execute("INSERT OR REPLACE INTO pending (id, done, tries) VALUES (?,?,0)", (item_id, int(done)))
+    conn.commit()
+
+
+def clear_pending(conn, item_id, done=None):
+    """Forget a pending tick. With `done`, only if it is still that tick: one
+    changed on the board while a retry was out must not be forgotten."""
+    if done is None:
+        conn.execute("DELETE FROM pending WHERE id=?", (item_id,))
+    else:
+        conn.execute("DELETE FROM pending WHERE id=? AND done=?", (item_id, int(done)))
+    conn.commit()
 
 
 def set_meta(conn, key, value):
@@ -212,11 +250,15 @@ def on_day(conn, day_start_utc, day_end_utc, include_done=True):
 
 
 def completed(conn, limit=40):
-    """What has actually been finished — the past the board never showed."""
+    """What has actually been finished — the past the board never showed.
+
+    Undated things of his own too: ticked, they used to vanish from "Mine"
+    with nowhere to reopen them."""
     holes = ",".join("?" * len(NON_WORK_KINDS))
     return conn.execute(
         f"SELECT * FROM items WHERE done=1 AND kind NOT IN ({holes})"
-        f" AND due_utc IS NOT NULL ORDER BY due_utc DESC LIMIT ?",
+        f" AND (due_utc IS NOT NULL OR source='local')"
+        f" ORDER BY COALESCE(due_utc, last_seen) DESC LIMIT ?",
         (*NON_WORK_KINDS, limit)).fetchall()
 
 

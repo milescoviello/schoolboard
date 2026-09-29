@@ -227,10 +227,15 @@ def build_messages(conn, schedule, cfg, now, tz):
                 label = f"{int(threshold)}h"
                 # Once a deadline has moved, the key carries it, so an extension
                 # gets its warnings again. Unmoved items keep the keys they were
-                # already sent under.
-                moved = f":{row['due_utc']}" if row["prev_due_utc"] else ""
+                # already sent under, and so does a moved one whose plain-key
+                # warning went out after the move: that was about the new date.
+                key = f"due:{row['id']}:{label}"
+                if row["prev_due_utc"]:
+                    sent = conn.execute("SELECT sent_at FROM notifications WHERE key=?", (key,)).fetchone()
+                    if not (sent and row["due_changed_at"] and sent["sent_at"] > row["due_changed_at"]):
+                        key += f":{row['due_utc']}"
                 out.append((
-                    f"due:{row['id']}:{label}{moved}",
+                    key,
                     f"<b>Due {_fmt_due(local, now)}</b>\n"
                     f"{_title(row, links)}\n{_esc(row['course'])}",
                     quiet_ends is None or due <= quiet_ends,
