@@ -856,7 +856,7 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
     return "".join(out)
 
 
-# Where each form sends him back to. A POST ends in a redirect, and to the top
+# Where each form comes back to. A POST ends in a redirect, and to the top
 # of the page every tick meant scrolling back down to the list on a phone.
 BACK = ("due", "mine", "finished")
 
@@ -1059,11 +1059,11 @@ ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0
         "%3Ccircle cx='16' cy='16' r='6' fill='%235FB3A1'/%3E%3C/svg%3E")
 
 
-# The page reloads itself every `refresh` seconds, but not while he is typing:
+# The page reloads itself every `refresh` seconds, but not mid-typing:
 # a plain meta refresh wiped a half-typed "Add something" and put the phone's
 # keyboard away mid-word. It also reloads at once when the page comes back into
 # view after long enough away, so the phone never opens on an hour-old board.
-# A day or week he browsed to (?day=, ?week=) goes back to the board's own
+# A day or week browsed to (?day=, ?week=) goes back to the board's own
 # view after ten minutes instead: reloaded as is, the phone's home-screen app,
 # which reopens on its last page, kept showing a Thursday tapped days before.
 # Without script, the meta refresh in <noscript> still does the job.
