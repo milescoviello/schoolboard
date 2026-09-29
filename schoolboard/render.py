@@ -55,6 +55,10 @@ html{-webkit-text-size-adjust:100%}
 body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:16px;
      line-height:1.45;padding:0 var(--pad) 64px;
      -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+/* Clear of the notch in landscape and the home bar, on the phone's home-screen
+   app (viewport-fit=cover). A browser without env() keeps the line above. */
+body{padding:env(safe-area-inset-top) max(var(--pad),env(safe-area-inset-right))
+     calc(64px + env(safe-area-inset-bottom)) max(var(--pad),env(safe-area-inset-left))}
 .wrap{max-width:1180px;margin:0 auto}
 a{color:inherit;text-decoration:none}
 button{font:inherit}
@@ -76,8 +80,9 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
        letter-spacing:-.01em}
 .pip{width:9px;height:9px;border-radius:50%;background:var(--live);flex:none;
      animation:glow 3.4s ease-in-out infinite}
-.stamp{font-size:14px;color:var(--mut)}
+.stamp{font-size:14px;color:var(--mut);white-space:nowrap}
 .stamp b{color:var(--ink2);font-weight:600}
+.stamp .ds{display:none}
 
 /* --- hero: the next thing --- */
 .hero{background:var(--card);border-radius:var(--r);padding:22px 24px 20px;
@@ -117,12 +122,15 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 /* minmax(0,1fr), not 1fr: a 1fr track never shrinks below its widest child,
    which pushed the phone layout to 499px and made the page scroll sideways. */
 .cols{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px}
+.cols .main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
-      padding:20px var(--pad2,22px)}
+      padding:20px var(--pad2,22px);scroll-margin-top:12px}
 .ch{display:flex;justify-content:space-between;align-items:center;gap:12px;
     margin-bottom:14px}
 .ch h2{font-size:17px;font-weight:650;letter-spacing:-.015em}
 .ch .sub{font-size:13px;color:var(--mut)}
+.ch.dy,.dsub{display:none}
+.dsub{font-size:13px;color:var(--mut);margin:-9px 0 12px}
 .nav{display:flex;gap:6px;align-items:center}
 .nav a{border:1px solid var(--line);border-radius:8px;min-width:32px;height:32px;
        display:inline-flex;align-items:center;justify-content:center;color:var(--ink2);
@@ -154,24 +162,22 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .nb span{position:absolute;left:-38px;top:-8px;font-size:10px;color:var(--late);
          background:var(--card);padding:0 3px;font-weight:600}
 
-/* --- day list (phone form of the week) --- */
+/* --- one day's classes (the phone's form of the timetable) --- */
 .dl{display:none}
-.dsec{margin-bottom:6px}
-.dsec .h{display:flex;justify-content:space-between;align-items:baseline;
-         padding:14px 0 8px;border-bottom:1px solid var(--hair)}
-.dsec .h .d{font-size:16px;font-weight:650;letter-spacing:-.015em}
-.dsec .h .s{font-size:12px;color:var(--mut)}
-.dsec.today .h .d{color:var(--live)}
-.dsec.focus .h{border-bottom-color:var(--ink)}
 .ev{display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;padding:12px 0;
     border-bottom:1px solid var(--hair)}
-.ev:last-child{border-bottom:0}
+.ev:first-child{padding-top:2px}
+.ev:last-child{border-bottom:0;padding-bottom:0}
 .ev .t{font-size:15px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums}
 .ev .t small{display:block;font-size:12px;color:var(--mut);font-weight:400;
              white-space:nowrap;margin-top:2px}
 .ev .b{border-left:3px solid currentColor;padding-left:12px}
 .ev .c{font-size:17px;font-weight:650;letter-spacing:-.015em;color:var(--ink)}
-.ev .r{font-size:14px;color:var(--mut);margin-top:1px}
+.ev .c em{font-style:normal;font-size:12px;font-weight:650;color:var(--live);
+          background:var(--live-bg);padding:2px 8px;border-radius:99px;margin-left:8px;
+          vertical-align:2px;letter-spacing:0}
+.ev .r{font-size:14px;color:var(--ink2);margin-top:1px}
+.ev .i{font-size:13px;color:var(--mut);margin-top:1px}
 .ev .p{margin-top:5px;font-size:14px}
 .ev .p a{color:var(--live);font-weight:500;border-bottom:1px solid currentColor}
 .ev.gone{opacity:.45}
@@ -188,6 +194,11 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .it .q{color:var(--ink2);font-size:13px;font-style:italic;margin-top:4px;line-height:1.35}
 .it .m{color:var(--mut);font-size:13px;margin-top:4px;display:flex;gap:8px;
        align-items:center;flex-wrap:wrap}
+/* A tag rather than a trailing "· quiz": wrapped under a long title, the dot
+   was left at the start of a line of its own. */
+.it .m .kd{font-size:12px;color:var(--ink2);background:var(--hair);border-radius:5px;
+           padding:0 6px;line-height:18px}
+.it .m .kd.wait{color:var(--due);background:none;padding:0;font-weight:600}
 .it .at{font-variant-numeric:tabular-nums}
 .it.soon .at{color:var(--due);font-weight:600}
 .it.late .at{color:var(--late);font-weight:600}
@@ -202,7 +213,9 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .li{padding:11px 0;border-bottom:1px solid var(--hair)}
 .li:last-child{border-bottom:0}
 .li .h{font-size:15px;line-height:1.4}
-.li .m{color:var(--mut);font-size:13px;margin-top:3px;display:flex;gap:7px;align-items:center}
+.li .m{color:var(--mut);font-size:13px;margin-top:3px;display:flex;gap:4px 7px;align-items:center;
+       flex-wrap:wrap}
+.li .m .at{white-space:nowrap}
 .li.unread .h{font-weight:650}
 .li.read{opacity:.62}
 .gr{display:flex;justify-content:space-between;align-items:baseline;padding:10px 0;
@@ -212,15 +225,20 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .gr .g{color:var(--mut);font-size:13px;margin-left:5px;font-weight:400}
 .empty{color:var(--mut);font-size:15px;padding:6px 0 2px}
 .more{color:var(--mut);font-size:13.5px;padding:14px 0 2px}
-.it.local{grid-template-columns:minmax(0,1fr) 38px 30px}
+/* The delete sits before the tick, so every tick lines up at the right edge. */
+.it.local{grid-template-columns:minmax(0,1fr) 30px 38px;gap:8px}
 .del{width:28px;height:34px;border:0;background:none;color:var(--mut);font-size:16px;
      cursor:pointer;border-radius:8px;line-height:1}
 .del:hover{color:var(--late)}
+/* 16px type in the inputs: under that, iOS zooms the page in on focus and
+   leaves it zoomed. */
 .addf{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--hair)}
-.addf input[type=text]{flex:1;min-width:0;font:inherit;font-size:15px;padding:10px 12px;
+.it + .addf{margin-top:0;border-top:0}
+.addf:first-child{margin-top:0;padding-top:0;border-top:0}
+.addf input[type=text]{flex:1;min-width:0;font:inherit;font-size:16px;padding:10px 12px;
      border:1px solid var(--line);border-radius:var(--r2);background:var(--sunk);color:var(--ink)}
-.addf input[type=date]{font:inherit;font-size:14px;padding:10px;border:1px solid var(--line);
-     border-radius:var(--r2);background:var(--sunk);color:var(--ink);width:140px}
+.addf input[type=date]{font:inherit;font-size:16px;padding:9px 10px;border:1px solid var(--line);
+     border-radius:var(--r2);background:var(--sunk);color:var(--ink);width:150px;min-width:0}
 .addf input:focus{outline:2px solid var(--live);outline-offset:1px;background:var(--card)}
 .addf button{font:inherit;font-size:15px;font-weight:600;padding:10px 16px;border:0;
      border-radius:var(--r2);background:var(--ink);color:var(--card);cursor:pointer;
@@ -244,8 +262,8 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 /* --- term progress --- */
 .term{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
       padding:18px 22px;margin-top:16px}
-.term .top{display:flex;justify-content:space-between;align-items:baseline;
-           font-size:13px;color:var(--mut);margin-bottom:11px}
+.term .top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;
+           gap:3px 14px;font-size:13px;color:var(--mut);margin-bottom:11px}
 .term .top b{color:var(--ink);font-size:15px;font-weight:650;letter-spacing:-.01em}
 .tbar{display:flex;gap:2px;height:26px;align-items:flex-end}
 .tw{flex:1;background:var(--hair);border-radius:3px;height:9px;position:relative}
@@ -278,12 +296,35 @@ footer{color:var(--mut);font-size:12px;padding:22px 2px 0;display:flex;
        justify-content:space-between;gap:12px;flex-wrap:wrap}
 
 @media (max-width:860px){
-  .tt{display:none}
-  .dl{display:block}
   .hero .code{font-size:30px}
   .hero .cd{margin-left:0;font-size:15px}
   .card{--pad2:17px}
   .term{padding:16px 17px}
+  /* One column: the cards of both columns in one list, and what is already
+     finished at the bottom rather than above the calendar and mail. */
+  .cols .main,.cols .side{display:contents}
+  .cols .fin{order:1}
+}
+/* A phone. The week grid is unreadable at this width, so it becomes one day
+   at a time, picked with the chips. */
+@media (max-width:699px){
+  .tt,.ch.wk{display:none}
+  .dl{display:block}
+  .ch.dy{display:flex}
+  .dsub{display:block}
+  .stamp .dlong{display:none}
+  .stamp .ds{display:inline}
+  .days{gap:5px}
+  .chip{min-width:0;padding:8px 2px 7px}
+  .chip.pick{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+  .hero{padding:20px 20px 18px}
+  .tick{width:38px;height:38px}
+  .it{grid-template-columns:minmax(0,1fr) 40px}
+  .it.local{grid-template-columns:minmax(0,1fr) 32px 40px}
+  .del{width:32px;height:38px}
+  .addf{flex-wrap:wrap}
+  .addf input[type=text]{flex:1 1 100%}
+  .addf input[type=date]{flex:1 1 auto;width:auto}
 }
 @media (min-width:861px){
   :root{--pad:28px}
@@ -473,8 +514,12 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
                 leave = (f'<div class="leave">Leave by '
                          f'{depart.strftime("%-I:%M %p").lower()}</div>')
         bar = leave + bar
+        # On a holiday the next class is days off, and nothing else on a phone
+        # says why today is empty.
+        reason = None if nxt.day == now.date() else timetable.no_class_reason(schedule, now.date())
+        kicker = f"{esc(reason)} &middot; next up" if reason else "Next up"
         return f"""<div class="hero">
-  <div class="k">Next up</div>
+  <div class="k">{kicker}</div>
   <div class="row"><span class="code">{esc(nxt.code)}</span>
     <span class="cd n">{esc(gap_text(nxt.minutes_until(now)))}</span></div>
   <div class="ttl">{esc(nxt.course.get('title', ''))}</div>
@@ -488,9 +533,10 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
 </div>"""
 
 
-def day_chips(schedule, monday, tz, now, workload, focus_day=None):
+def day_chips(schedule, monday, tz, now, workload, focus_day=None, shown=None):
     """The week as tappable days, each showing how much is owed. A tapped day
-    is marked, and the link jumps to it in the phone's day list."""
+    is marked. On a phone they pick the day its timetable shows, and `shown`
+    (that day) is marked there even when no chip was tapped."""
     out = []
     for offset in range(7):
         day = monday + timedelta(days=offset)
@@ -504,8 +550,10 @@ def day_chips(schedule, monday, tz, now, workload, focus_day=None):
             classes.append("off")
         if day == focus_day:
             classes.append("focus")
+        if day == shown:
+            classes.append("pick")
         pips = "".join("<i></i>" for _ in range(min(load, 3)))
-        out.append(f'<a class="{" ".join(classes)}" href="/?day={day.isoformat()}#d-{day.isoformat()}">'
+        out.append(f'<a class="{" ".join(classes)}" href="/?day={day.isoformat()}">'
                    f'<span class="w">{day.strftime("%a")}</span>'
                    f'<span class="n">{day.day}</span>'
                    f'<span class="ld">{pips}</span></a>')
@@ -578,47 +626,78 @@ def week_grid(schedule, monday, tz, colours, now):
             f'{"".join(cells)}</div></div>')
 
 
-def day_list(schedule, monday, tz, colours, now, focus_day=None):
-    """The phone form of the same week — a different shape, not a squeezed grid.
-    Each day carries an anchor, so a tapped chip lands on it."""
-    out = []
-    for offset in range(7):
-        day = monday + timedelta(days=offset)
-        meetings = timetable.meetings_on(schedule, day, tz)
-        reason = timetable.no_class_reason(schedule, day)
-        if not meetings and not reason and day.weekday() >= 5 and day != focus_day:
-            continue
-        cls = " today" if day == now.date() else ""
-        cls += " focus" if day == focus_day else ""
-        if reason:
-            note = reason
-        elif meetings:
-            note = f"{len(meetings)} class" + ("es" if len(meetings) != 1 else "")
-        else:
-            note = "clear"
-        rows = []
-        for meeting in meetings:
-            pair = colours.get(meeting.code, ("var(--mut)", "var(--sunk)"))
-            gone = " gone" if meeting.end < now else ""
-            prep = ""
-            # A lab can file its prep under the lecture's site ("site_course"):
-            # CS 2000's site lists the labs, but on lab days only CS 2001 meets.
-            site = meeting.course.get("site_course") or meeting.code
-            for entry in coursesite.entries_for(day, site):
-                if entry["kind"] in ("class", "lab") and safe_url(entry.get("url")):
-                    prep = f'<div class="p">{link(esc(entry.get("label")), entry["url"])}</div>'
-                    break
-            rows.append(
-                f'<div class="ev{gone}" style="color:{pair[0]}">'
-                f'<div class="t" style="color:var(--ink)">{meeting.start.strftime("%-I:%M")}'
-                f'<small>{meeting.end.strftime("%-I:%M %p").lower()}</small></div>'
-                f'<div class="b"><div class="c">{esc(meeting.code)}</div>'
-                f'<div class="r">{esc(meeting.course.get("room", ""))} &middot; '
-                f'{esc(meeting.course.get("instructor", ""))}</div>{prep}</div></div>')
-        out.append(f'<div class="dsec{cls}" id="d-{day.isoformat()}"><div class="h">'
-                   f'<span class="d">{day.strftime("%A")} {day.day}</span>'
-                   f'<span class="s">{esc(note)}</span></div>{"".join(rows)}</div>')
-    return "".join(out)
+def shown_day(schedule, now, tz, week=None, lookahead=7):
+    """The day the phone's timetable opens on when no chip was tapped: today
+    while it has a class still to come, else the next day that has one. So
+    late on a Tuesday it is Wednesday, and on a Saturday it is Monday, rather
+    than a day of classes already over. A week other than this one (a tap on
+    the term strip) opens on its first day of classes."""
+    today = now.date()
+    if week is not None and week != monday_of(today):
+        return next((week + timedelta(days=i) for i in range(7)
+                     if timetable.meetings_on(schedule, week + timedelta(days=i), tz)), week)
+    if any(m.end > now for m in timetable.meetings_on(schedule, today, tz)):
+        return today
+    for offset in range(1, lookahead + 1):
+        if timetable.meetings_on(schedule, today + timedelta(days=offset), tz):
+            return today + timedelta(days=offset)
+    return today
+
+
+def day_header(schedule, day, tz, now):
+    """"Tomorrow", arrows a day either way and a button for today, then
+    "Wed 30 Sep · 2 classes" on a line of its own: beside the arrows it
+    wrapped on every phone."""
+    today = now.date()
+    delta = (day - today).days
+    title = {0: "Today", 1: "Tomorrow", -1: "Yesterday"}.get(delta, day.strftime("%A"))
+    date_text = day.strftime("%a %-d %b") if -1 <= delta <= 1 else day.strftime("%-d %b")
+    reason = timetable.no_class_reason(schedule, day)
+    count = len(timetable.meetings_on(schedule, day, tz))
+    if count:
+        date_text += f" &middot; {count} class{'' if count == 1 else 'es'}"
+    elif reason:
+        date_text += f" &middot; {esc(reason)}"
+    before, after = (day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat()
+    # Today, even when the board opens on tomorrow: late in the evening the
+    # page shows Wednesday, and this is the way back to Tuesday.
+    nav = (f'<span class="nav"><a href="/?day={before}" aria-label="Previous day">&#8592;</a>'
+           f'<a href="/?day={today.isoformat()}" class="{"on" if delta == 0 else ""}">Today</a>'
+           f'<a href="/?day={after}" aria-label="Next day">&#8594;</a></span>')
+    return (f'<div class="ch dy"><h2>{title}</h2>{nav}</div>'
+            f'<div class="dsub">{date_text}</div>')
+
+
+def day_list(schedule, day, tz, colours, now):
+    """One day's classes: the phone's form of the timetable, a different shape
+    rather than a squeezed grid. It used to be the whole week, which on a phone
+    ran to 1,400 px, mostly classes already over, before Due was reached."""
+    rows = []
+    for meeting in timetable.meetings_on(schedule, day, tz):
+        pair = colours.get(meeting.code, ("var(--mut)", "var(--sunk)"))
+        state = meeting.status(now)
+        cls = " gone" if state == "past" else ""
+        live = "<em>now</em>" if state == "current" else ""
+        prep = ""
+        # A lab can file its prep under the lecture's site ("site_course"):
+        # CS 2000's site lists the labs, but on lab days only CS 2001 meets.
+        site = meeting.course.get("site_course") or meeting.code
+        for entry in coursesite.entries_for(day, site):
+            if entry["kind"] in ("class", "lab") and safe_url(entry.get("url")):
+                prep = f'<div class="p">{link(esc(entry.get("label")), entry["url"])}</div>'
+                break
+        who = meeting.course.get("instructor")
+        rows.append(
+            f'<div class="ev{cls}" style="color:{pair[0]}">'
+            f'<div class="t" style="color:var(--ink)">{meeting.start.strftime("%-I:%M")}'
+            f'<small>{meeting.end.strftime("%-I:%M %p").lower()}</small></div>'
+            f'<div class="b"><div class="c">{esc(meeting.code)}{live}</div>'
+            f'<div class="r">{esc(meeting.course.get("room", ""))}</div>'
+            + (f'<div class="i">{esc(who)}</div>' if who else "")
+            + f'{prep}</div></div>')
+    if not rows:
+        return '<div class="empty">No classes</div>'
+    return "".join(rows)
 
 
 def term_progress(schedule, workload, today):
@@ -734,34 +813,29 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
         kind = row["kind"]
         said = lectures.said_in_class(row, links or {})
         heard = ""
+        # The kind goes on the meta line, not after the title: there it wrapped
+        # onto a line of its own ("said in / class") under a long title.
         if said:
             quote = " / ".join(f"{lectures.which(s)} ({s['date']}): {s['what']} (“{s['quote']}”)" for s in said)
             label = kind if kind == lectures.KIND else "also said in class"
-            kind_html = f' <span class="kd" title="{esc(quote)}">{esc(label)}</span>'
+            kind_html = f'<span class="kd" title="{esc(quote)}">{esc(label)}</span>'
             # A line of its own as well as the tooltip: the phone is the main
             # device, and a phone can't hover.
             heard = "".join(f'<div class="q">“{esc(s["quote"] or s["what"])}” &middot; {esc(lectures.which(s))}</div>'
                             for s in said[:2])
         else:
-            kind_html = f' <span class="kd">{esc(kind)}</span>' if kind != "assignment" else ""
+            kind_html = f'<span class="kd">{esc(kind)}</span>' if kind not in ("assignment", "task") else ""
         # Every heading but Overdue already names the day, so the clock is enough.
         at = due_label(local, now) if group == "Overdue" else local.strftime("%-I:%M %p").lower()
         title = link(esc(row["title"]), row["url"])
         mine = row["source"] == "local"
-        delete = ("" if not mine else
-                  f'<form method="post" action="/delete">'
-                  f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-                  f'<button class="del" type="submit" aria-label="Delete">&times;</button>'
-                  f'</form>')
         out.append(
             f'<div class="it {urgency(local, now)}{" local" if mine else ""}"><div>'
-            f'<div class="w">{title}{kind_html}</div>'
+            f'<div class="w">{title}</div>'
             f'<div class="m"><span class="at">{esc(at)}</span>'
-            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div>{heard}</div>'
-            f'<form method="post" action="/done">'
-            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-            f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
-            f'</form>{delete}</div>')
+            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span>{kind_html}</div>{heard}</div>'
+            + (delete_button(row["id"], "due") if mine else "")
+            + tick_button(row["id"], "due") + '</div>')
     more = []
     if hidden_late:
         more.append(f"{hidden_late} more overdue")
@@ -775,6 +849,30 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
     return "".join(out)
 
 
+# Where each form sends him back to. A POST ends in a redirect, and to the top
+# of the page every tick meant scrolling back down to the list on a phone.
+BACK = ("due", "mine", "finished")
+
+
+def _back(where):
+    return f'<input type="hidden" name="back" value="{where}">'
+
+
+def tick_button(item_id, where, undo=False):
+    return (f'<form method="post" action="/done">'
+            f'<input type="hidden" name="id" value="{esc(item_id)}">{_back(where)}'
+            + ('<input type="hidden" name="undo" value="1">'
+               '<button class="tick" type="submit" aria-label="Reopen">&#8630;</button>' if undo else
+               '<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>')
+            + '</form>')
+
+
+def delete_button(item_id, where):
+    return (f'<form method="post" action="/delete">'
+            f'<input type="hidden" name="id" value="{esc(item_id)}">{_back(where)}'
+            f'<button class="del" type="submit" aria-label="Delete">&times;</button></form>')
+
+
 def render_personal(rows, now, tz):
     """Undated notes he added. Dated ones live in Due with the rest of the work,
     because a thing with a deadline belongs next to the other things with
@@ -785,19 +883,13 @@ def render_personal(rows, now, tz):
             continue
         out.append(
             f'<div class="it local"><div><div class="w">{esc(row["title"])}</div></div>'
-            f'<form method="post" action="/done">'
-            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-            f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
-            f'</form>'
-            f'<form method="post" action="/delete">'
-            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-            f'<button class="del" type="submit" aria-label="Delete">&times;</button>'
-            f'</form></div>')
+            f'{delete_button(row["id"], "mine")}{tick_button(row["id"], "mine")}</div>')
     out.append(
         '<form class="addf" method="post" action="/add">'
+        f'{_back("mine")}'
         '<input type="text" name="title" placeholder="Add something of your own" '
-        'aria-label="What to add" maxlength="200">'
-        '<input type="date" name="due" aria-label="Due date (optional)">'
+        'aria-label="What to add" maxlength="200" required>'
+        '<input type="date" name="due" aria-label="Due date (optional)" title="Due date (optional)">'
         '<button type="submit">Add</button></form>')
     return "".join(out)
 
@@ -849,17 +941,15 @@ def render_completed(rows, now, tz, limit=8, colours=None, pending=None):
     for row in (rows or [])[:limit]:
         due = parse_utc(row["due_utc"])
         when = due.astimezone(tz).strftime("%-d %b") if due else ""
-        waiting = ' <span class="kd">not in Canvas yet</span>' if row["id"] in (pending or ()) else ""
+        # On the meta line: inside the struck-through title it was struck
+        # through too, which read as "no longer waiting".
+        waiting = '<span class="kd wait">not in Canvas yet</span>' if row["id"] in (pending or ()) else ""
         out.append(
             f'<div class="it done"><div>'
-            f'<div class="w">{esc(row["title"])}{waiting}</div>'
+            f'<div class="w">{esc(row["title"])}</div>'
             f'<div class="m"><span class="at">{esc(when)}</span>'
-            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span></div></div>'
-            f'<form method="post" action="/done">'
-            f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-            f'<input type="hidden" name="undo" value="1">'
-            f'<button class="tick" type="submit" aria-label="Reopen">&#8630;</button>'
-            f'</form></div>')
+            f'{dot(row["course"], colours)}<span>{esc(row["course"])}</span>{waiting}</div></div>'
+            f'{tick_button(row["id"], "finished", undo=True)}</div>')
     return "".join(out)
 
 
@@ -944,10 +1034,12 @@ def render_appointments(rows, now, tz, limit=6, colours=None):
             label = f"{day_word(local, now)}, all day"
         else:
             label = due_label(local, now, with_day=True)
-        where = f' &middot; {esc(row["body"])}' if row["body"] else ""
+        # One run of text that wraps, not three flex items: side by side, the
+        # time and the place squeezed each other into two ragged columns.
+        where = " &middot; ".join(esc(part) for part in (row["course"], row["body"]) if part)
         out.append(f'<div class="li"><div class="h">{esc(row["title"])}</div>'
-                   f'<div class="m"><span class="at">{esc(label)}</span>'
-                   f'{esc(row["course"])}{where}</div></div>')
+                   f'<div class="m"><span><span class="at">{esc(label)}</span>'
+                   f'{" &middot; " + where if where else ""}</span></div></div>')
     return "".join(out)
 
 
@@ -1001,11 +1093,12 @@ def login_page(error=None, retry_after=None):
                   f'<p>Classes, coursework and course mail.</p>{message}{form}</div></div>')
 
 
-def card(heading, content, sub="", extra="", cls=""):
+def card(heading, content, sub="", extra="", cls="", ident=""):
     if not content.strip():
         return ""
     right = extra or (f'<span class="sub">{sub}</span>' if sub else "")
-    return (f'<section class="card {cls}"><div class="ch"><h2>{heading}</h2>{right}</div>'
+    anchor = f' id="{ident}"' if ident else ""
+    return (f'<section class="card {cls}"{anchor}><div class="ch"><h2>{heading}</h2>{right}</div>'
             f'{content}</section>')
 
 
@@ -1038,10 +1131,8 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
     elif canvas_ready:
         work = '<div class="empty">Nothing due in the next stretch. Enjoy it.</div>'
     changed_block = f'<div class="chg">{changed}</div>' if changed.strip() else ""
-    mine = card("Mine", personal, cls="rv d4")
-    mine_block = f'<div style="margin-top:16px">{mine}</div>' if mine else ""
-    finished = card("Finished", completed, cls="rv d5")
-    finished_block = f'<div style="margin-top:16px">{finished}</div>' if finished else ""
+    mine = card("Mine", personal, cls="rv d4", ident="mine")
+    finished = card("Finished", completed, cls="rv d5 fin", ident="finished")
 
     side = "".join([
         card("Exams", render_exams(schedule, now, tz)),
@@ -1051,27 +1142,31 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
         card("Grades", grades),
     ])
 
+    # The phone shows one day of the timetable: the one tapped, or else the one
+    # worth looking at now. The grid (wider screens) shows the week either way.
+    shown = focus_day or shown_day(schedule, now, tz, week)
     return _shell(f"{now.strftime('%A')} — schoolboard", f"""<div class="bar rv">
   <span class="brand"><span class="pip"></span> schoolboard</span>
-  <span class="stamp"><b>{now.strftime('%A %-d %B')}</b> &nbsp; <span class="n">{now.strftime('%-I:%M %p').lower()}</span></span>
+  <span class="stamp"><b><span class="dlong">{now.strftime('%A %-d %B')}</span><span class="ds">{now.strftime('%a %-d %b')}</span></b> &nbsp; <span class="n">{now.strftime('%-I:%M %p').lower()}</span></span>
 </div>
 
 <div class="rv d1">{hero(schedule, now, tz, colours, walk_minutes)}</div>
-<div class="rv d2">{day_chips(schedule, monday, tz, now, workload, focus_day)}</div>
+<div class="rv d2">{day_chips(schedule, monday, tz, now, workload, focus_day, shown)}</div>
 
 <div class="cols">
-  <div>
+  <div class="main">
     <section class="card rv d3">
-      <div class="ch"><h2>{span}</h2>{nav}</div>
+      <div class="ch wk"><h2>{span}</h2>{nav}</div>
+      {day_header(schedule, shown, tz, now)}
       {week_grid(schedule, monday, tz, colours, now)}
-      <div class="dl">{day_list(schedule, monday, tz, colours, now, focus_day)}</div>
+      <div class="dl">{day_list(schedule, shown, tz, colours, now)}</div>
     </section>
-    <section class="card rv d4" style="margin-top:16px">
+    <section class="card rv d4" id="due">
       <div class="ch"><h2>Due</h2></div>
       {changed_block}{work}
     </section>
-    {mine_block}
-    {finished_block}
+    {mine}
+    {finished}
   </div>
   <div class="side rv d4">{side}</div>
 </div>

@@ -42,6 +42,10 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
+    def post(self, path, body):
+        return self.request("POST", path, body=body, **{"Sec-Fetch-Site": "same-origin",
+                                                       "Content-Type": "application/x-www-form-urlencoded"})
+
     def request(self, method, path, body=None, **headers):
         conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
         conn.request(method, path, body=body, headers=headers)
@@ -201,6 +205,26 @@ class TrustedPageTest(ServerTest):
         patch = mock.patch.object(config, "load_schedule", return_value=SCHEDULE)
         patch.start()
         self.addCleanup(patch.stop)
+
+    def test_a_form_comes_back_to_its_section(self):
+        # To the top of the page, every tick on a phone meant scrolling back down.
+        conn = store.connect()
+        item = store.add_personal(conn, "Buy a notebook")
+        conn.close()
+        r, _ = self.post("/done", f"id={item}&back=mine")
+        self.assertEqual((r.status, r.getheader("Location")), (303, "/#mine"))
+        r, _ = self.post("/done", f"id={item}&undo=1&back=finished")
+        self.assertEqual(r.getheader("Location"), "/#finished")
+        # Only a named section: anything else is the top of the page.
+        for odd in ("https://evil.example", "//evil.example", "due%0d%0aX-Evil:1", ""):
+            r, _ = self.post("/done", f"id={item}&back={odd}")
+            self.assertEqual(r.getheader("Location"), "/", odd)
+
+    def test_a_dated_add_comes_back_to_due(self):
+        r, _ = self.post("/add", "title=Return+book&due=2026-10-01&back=mine")
+        self.assertEqual(r.getheader("Location"), "/#due")
+        r, _ = self.post("/add", "title=Call+home&back=mine")
+        self.assertEqual(r.getheader("Location"), "/#mine")
 
     def test_no_sign_out_where_there_is_no_session(self):
         r, body = self.request("GET", "/")

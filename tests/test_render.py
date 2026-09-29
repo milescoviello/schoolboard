@@ -164,11 +164,10 @@ class OddScheduleTest(unittest.TestCase):
 class WeekTest(unittest.TestCase):
     now = datetime(2026, 9, 28, 9, 0, tzinfo=LA)
 
-    def test_focus_day_is_marked_and_anchored(self):
+    def test_a_tapped_day_is_marked_and_shown(self):
         html = render.page(SCHEDULE, self.now, LA, "", "", "t", True, focus_day=date(2026, 10, 1))
-        self.assertIn('class="chip focus" href="/?day=2026-10-01#d-2026-10-01"', html)
-        self.assertIn('<div class="dsec focus" id="d-2026-10-01">', html)
-        self.assertIn('id="d-2026-09-28"', html)
+        self.assertIn('class="chip focus pick" href="/?day=2026-10-01"', html)
+        self.assertIn('<div class="ch dy"><h2>Thursday</h2>', html)
 
     def test_lab_prep_comes_from_the_lecture_site(self):
         def entries_for(day, course=None, path=None):
@@ -176,8 +175,101 @@ class WeekTest(unittest.TestCase):
                 return [{"kind": "lab", "label": "Lab 3", "url": "https://example.edu/lab3", "date": "2026-09-29"}]
             return []
         with mock.patch.object(coursesite, "entries_for", side_effect=entries_for):
-            html = render.day_list(SCHEDULE, date(2026, 9, 28), LA, render.colour_map(SCHEDULE), self.now)
+            html = render.day_list(SCHEDULE, date(2026, 9, 29), LA, render.colour_map(SCHEDULE), self.now)
         self.assertIn('<a href="https://example.edu/lab3">Lab 3</a>', html)
+
+
+class PhoneDayTest(unittest.TestCase):
+    """The phone shows one day of the timetable. The whole week as a list ran
+    to 1,400 px, mostly classes already over, before Due was reached."""
+    monday = date(2026, 9, 28)
+
+    def at(self, day, hour, minute=0):
+        return datetime.combine(day, datetime.min.time(), tzinfo=LA).replace(hour=hour, minute=minute)
+
+    def test_opens_on_today_while_a_class_is_still_to_come(self):
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(self.monday, 9), LA), self.monday)
+        # Mid-class is still today: CS 1000 runs 10:00 to 11:40.
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(self.monday, 11, 30), LA), self.monday)
+
+    def test_after_the_last_class_it_opens_on_the_next_day_that_has_one(self):
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(self.monday, 12), LA), date(2026, 9, 29))
+        # Tuesday's lab is the last class until Wednesday.
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(date(2026, 9, 29), 19), LA), date(2026, 9, 30))
+
+    def test_a_weekend_opens_on_monday(self):
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(date(2026, 10, 3), 10), LA), date(2026, 10, 5))
+
+    def test_another_week_opens_on_its_first_day_of_classes(self):
+        holiday = dict(SCHEDULE, no_class_days=[{"date": "2026-10-12", "name": "Indigenous Peoples Day"}])
+        self.assertEqual(render.shown_day(holiday, self.at(self.monday, 9), LA, week=date(2026, 10, 12)),
+                         date(2026, 10, 13))
+        # This week is not "another week": today's rule applies.
+        self.assertEqual(render.shown_day(SCHEDULE, self.at(self.monday, 9), LA, week=self.monday), self.monday)
+
+    def test_only_that_day_is_listed(self):
+        html = render.day_list(SCHEDULE, self.monday, LA, render.colour_map(SCHEDULE), self.at(self.monday, 10, 30))
+        self.assertIn("CS 1000", html)
+        self.assertNotIn("CS 1001", html)       # Tuesday's
+        self.assertIn("<em>now</em>", html)
+        after = render.day_list(SCHEDULE, self.monday, LA, render.colour_map(SCHEDULE), self.at(self.monday, 12))
+        self.assertIn('class="ev gone"', after)
+        self.assertNotIn("<em>now</em>", after)
+        self.assertIn("No classes", render.day_list(SCHEDULE, date(2026, 10, 3), LA, {}, self.at(self.monday, 9)))
+
+    def test_the_page_opens_on_tomorrow_in_the_evening(self):
+        html = render.page(SCHEDULE, self.at(self.monday, 20), LA, "", "", "t", True)
+        self.assertIn('<div class="ch dy"><h2>Tomorrow</h2>', html)
+        self.assertIn('<div class="dsub">Tue 29 Sep &middot; 1 class</div>', html)
+        self.assertIn('class="chip pick" href="/?day=2026-09-29"', html)
+        # "Today" is today, and not lit while the card shows tomorrow.
+        self.assertIn('<a href="/?day=2026-09-28" class="">Today</a>', html)
+        morning = render.page(SCHEDULE, self.at(self.monday, 9), LA, "", "", "t", True)
+        self.assertIn('<a href="/?day=2026-09-28" class="on">Today</a>', morning)
+
+    def test_a_holiday_says_why_in_the_hero(self):
+        holiday = dict(SCHEDULE, no_class_days=[{"date": "2026-09-28", "name": "Founders Day"}])
+        html = render.hero(holiday, self.at(self.monday, 9), LA, render.colour_map(holiday))
+        self.assertIn('<div class="k">Founders Day &middot; next up</div>', html)
+        ordinary = render.hero(SCHEDULE, self.at(self.monday, 9), LA, render.colour_map(SCHEDULE))
+        self.assertIn('<div class="k">Next up</div>', ordinary)
+
+
+class RowsTest(unittest.TestCase):
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=LA)
+
+    def test_the_kind_is_on_the_meta_line(self):
+        html = render.render_tasks([row(self.now + timedelta(hours=3), kind="quiz")], self.now, LA)
+        title = html.split('<div class="w">', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("quiz", title.replace("Work 0", ""))
+        self.assertIn('<span class="kd">quiz</span></div>', html)
+
+    def test_not_in_canvas_yet_is_not_struck_through(self):
+        done = row(self.now - timedelta(days=2), done=1)
+        html = render.render_completed([done], self.now, LA, pending={done["id"]})
+        title = html.split('<div class="w">', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("not in Canvas", title)
+        self.assertIn('<span class="kd wait">not in Canvas yet</span>', html)
+
+    def test_every_tick_is_the_last_thing_in_its_row(self):
+        mine = row(self.now + timedelta(hours=3), n=1, source="local", id="local:abc", kind="task", course="Mine")
+        html = render.render_tasks([mine], self.now, LA)
+        self.assertLess(html.index('action="/delete"'), html.index('action="/done"'))
+        self.assertNotIn('class="kd">task', html)
+        personal = render.render_personal([dict(mine, due_utc=None)], self.now, LA)
+        self.assertLess(personal.index('action="/delete"'), personal.index('action="/done"'))
+
+    def test_forms_say_where_to_come_back_to(self):
+        html = render.render_tasks([row(self.now + timedelta(hours=3))], self.now, LA)
+        self.assertIn('name="back" value="due"', html)
+        self.assertIn('name="back" value="mine"', render.render_personal([], self.now, LA))
+        done = render.render_completed([row(self.now, done=1)], self.now, LA)
+        self.assertIn('name="back" value="finished"', done)
+
+    def test_an_appointment_reads_as_one_line(self):
+        appt = row(datetime(2026, 9, 29, 15, 30, tzinfo=LA), kind="appointment", course="Outlook", body="Room 2")
+        html = render.render_appointments([appt], self.now, LA)
+        self.assertIn('<span><span class="at">tomorrow 3:30 pm</span> &middot; Outlook &middot; Room 2</span>', html)
 
 
 if __name__ == "__main__":

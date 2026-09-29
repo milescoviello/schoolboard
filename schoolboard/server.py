@@ -562,7 +562,10 @@ class Handler(BaseHTTPRequestHandler):
                     store.add_personal(conn, title, due_utc)
                 finally:
                     conn.close()
-            self._redirect("/")
+                if due_utc:     # a dated one is listed under Due, not Mine
+                    self._redirect("/#due")
+                    return
+            self._redirect(self._back(fields))
             return
         if path == "/delete":
             conn = store.connect()
@@ -570,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
                 store.delete_item(conn, (fields.get("id") or [""])[0])
             finally:
                 conn.close()
-            self._redirect("/")
+            self._redirect(self._back(fields))
             return
         if path != "/done":
             self._send("<h1>404</h1>", status=404)
@@ -581,7 +584,14 @@ class Handler(BaseHTTPRequestHandler):
             mark_item(item_id, done=not undo)
         except Exception:
             traceback.print_exc()
-        self._redirect("/")
+        self._redirect(self._back(fields))
+
+    @staticmethod
+    def _back(fields):
+        """The page, at the section the form was in. Only a named section: a
+        free-form "back" would make this an open redirect."""
+        where = (fields.get("back") or [""])[0]
+        return f"/#{where}" if where in render.BACK else "/"
 
     def _redirect(self, where):
         self.send_response(303)
