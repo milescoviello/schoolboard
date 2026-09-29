@@ -32,6 +32,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 from . import coursesite, lectures, timetable
+from .ics import ALL_DAY_TIME
 
 CSS = r"""
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -106,6 +107,8 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .chip.today .w,.chip.today .n{color:var(--card)}
 .chip.today .ld i{background:var(--card)}
 .chip.off{opacity:.5}
+.chip.focus{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.chip.today.focus{box-shadow:0 0 0 2px var(--bg),0 0 0 3px var(--ink)}
 .chip:hover{border-color:var(--ink2)}
 .chip.today:hover{border-color:var(--ink)}
 
@@ -156,6 +159,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .dsec .h .d{font-size:16px;font-weight:650;letter-spacing:-.015em}
 .dsec .h .s{font-size:12px;color:var(--mut)}
 .dsec.today .h .d{color:var(--live)}
+.dsec.focus .h{border-bottom-color:var(--ink)}
 .ev{display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;padding:12px 0;
     border-bottom:1px solid var(--hair)}
 .ev:last-child{border-bottom:0}
@@ -298,8 +302,8 @@ COURSE = [("var(--c0)", "var(--c0b)"), ("var(--c1)", "var(--c1b)"),
 def colour_map(schedule):
     """Stable (ink, tint) per course, by position in the timetable rather than a
     hash, so neighbouring courses stay distinct and never shift between loads."""
-    return {c["code"]: COURSE[i % len(COURSE)]
-            for i, c in enumerate(schedule["courses"])}
+    return {c.get("code", ""): COURSE[i % len(COURSE)]
+            for i, c in enumerate(schedule.get("courses") or [])}
 
 
 def ink_of(course, colours):
@@ -315,6 +319,32 @@ def esc(text):
     return html.escape(str(text or ""))
 
 
+_SCHEME = re.compile(r"^([a-z][a-z0-9+.\-]*):", re.I)
+
+
+def safe_url(url):
+    """The URL if it is http(s) or relative, else None.
+
+    esc() makes a string safe inside an attribute, not safe to follow. The
+    course site is someone else's page and the mail drop file comes from another
+    host, and either could hand over a javascript: link. Browsers ignore tabs,
+    newlines and leading control characters in a scheme, so those are stripped
+    before looking at it."""
+    url = str(url or "").strip()
+    if not url:
+        return None
+    match = _SCHEME.match(re.sub(r"[\x00-\x20\x7f]", "", url))
+    if match and match.group(1).lower() not in ("http", "https"):
+        return None
+    return url
+
+
+def link(text_html, url):
+    """`text_html` (already escaped) as a link when the URL is safe to follow."""
+    url = safe_url(url)
+    return f'<a href="{esc(url)}">{text_html}</a>' if url else text_html
+
+
 def parse_utc(value):
     if not value:
         return None
@@ -326,26 +356,48 @@ def parse_utc(value):
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
-def due_label(due, now):
-    delta = due - now
+def day_word(due, now):
+    """"today", "tomorrow", a weekday this week, or a date further out."""
+    if due.date() == now.date():
+        return "today"
+    if due.date() == (now + timedelta(days=1)).date():
+        return "tomorrow"
+    if 0 < (due.date() - now.date()).days < 7:
+        return due.strftime("%a")
+    return due.strftime("%-d %b")
+
+
+def due_label(due, now, with_day=False):
+    """When something is due, relative to now.
+
+    Lateness is measured in elapsed time: counted in calendar days, something
+    six minutes late at 00:05 read "1d late". Under the Today and Tomorrow
+    headings the clock alone is enough; `with_day` is for lists with no
+    headings, where "3:00 pm" could be today or tomorrow."""
+    delta = timetable.elapsed(now, due)
     mins = int(delta.total_seconds() // 60)
     if mins < 0:
-        days = (now.date() - due.date()).days
-        if days == 0:
-            return f"{-mins // 60}h late" if mins < -60 else f"{-mins}m late"
-        return f"{days}d late"
+        late = -mins
+        if late < 60:
+            return f"{late}m late"
+        if late < 24 * 60:
+            return f"{late // 60}h late"
+        return f"{late // (24 * 60)}d late"
     clock = due.strftime("%-I:%M %p").lower()
-    if due.date() == now.date() or due.date() == (now + timedelta(days=1)).date():
+    if due.date() == now.date():
         return clock
+    if due.date() == (now + timedelta(days=1)).date():
+        return f"tomorrow {clock}" if with_day else clock
     if delta.days < 7:
         return f"{due.strftime('%a')} {clock}"
     return due.strftime("%-d %b")
 
 
 def urgency(due, now):
-    if due < now:
+    left = timetable.elapsed(now, due)
+    if left < timedelta(0):
         return "late"
-    return "soon" if (due - now) < timedelta(hours=48) else ""
+    return "soon" if left < timedelta(hours=48) else ""
 
 
 def gap_text(minutes):
@@ -402,8 +454,8 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
   <div class="k">Happening now</div>
   <div class="row"><span class="code">{esc(current.code)}</span>
     <span class="cd n">{left} min left</span></div>
-  <div class="ttl">{esc(current.course['title'])}</div>
-  <div class="meta">{esc(current.course['room'])} &nbsp;&mdash;&nbsp; ends {current.end.strftime('%-I:%M %p').lower()}</div>
+  <div class="ttl">{esc(current.course.get('title', ''))}</div>
+  <div class="meta">{esc(current.course.get('room', ''))} &nbsp;&mdash;&nbsp; ends {current.end.strftime('%-I:%M %p').lower()}</div>
   {bar}
 </div>"""
     if nxt is not None:
@@ -420,8 +472,8 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
   <div class="k">Next up</div>
   <div class="row"><span class="code">{esc(nxt.code)}</span>
     <span class="cd n">{esc(gap_text(nxt.minutes_until(now)))}</span></div>
-  <div class="ttl">{esc(nxt.course['title'])}</div>
-  <div class="meta">{esc(nxt.course['room'])} &nbsp;&mdash;&nbsp; {esc(day_word)} at {esc(when)}</div>
+  <div class="ttl">{esc(nxt.course.get('title', ''))}</div>
+  <div class="meta">{esc(nxt.course.get('room', ''))} &nbsp;&mdash;&nbsp; {esc(day_word)} at {esc(when)}</div>
   {bar}
 </div>"""
     reason = timetable.no_class_reason(schedule, now.date()) or "No more classes today"
@@ -431,20 +483,24 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
 </div>"""
 
 
-def day_chips(schedule, monday, tz, now, workload):
-    """The week as tappable days, each showing how much is owed."""
+def day_chips(schedule, monday, tz, now, workload, focus_day=None):
+    """The week as tappable days, each showing how much is owed. A tapped day
+    is marked, and the link jumps to it in the phone's day list."""
     out = []
     for offset in range(7):
         day = monday + timedelta(days=offset)
-        load = (workload.get(day.isoformat()) or (0, 0))[0]
+        total, done = workload.get(day.isoformat()) or (0, 0)
+        load = total - done
         classes = ["chip"]
         if day == now.date():
             classes.append("today")
         elif not load and (timetable.no_class_reason(schedule, day) or day.weekday() >= 5):
             # Greying a Saturday that has two things due would be a lie.
             classes.append("off")
+        if day == focus_day:
+            classes.append("focus")
         pips = "".join("<i></i>" for _ in range(min(load, 3)))
-        out.append(f'<a class="{" ".join(classes)}" href="/?day={day.isoformat()}">'
+        out.append(f'<a class="{" ".join(classes)}" href="/?day={day.isoformat()}#d-{day.isoformat()}">'
                    f'<span class="w">{day.strftime("%a")}</span>'
                    f'<span class="n">{day.day}</span>'
                    f'<span class="ld">{pips}</span></a>')
@@ -503,7 +559,7 @@ def week_grid(schedule, monday, tz, colours, now):
                 f'<div class="blk{gone}" style="grid-row:{row}/span {span};'
                 f'grid-column:{index + 2};color:{pair[0]};--bl:{pair[1]}">'
                 f'<div class="c">{esc(meeting.code)}</div>'
-                f'<div class="r">{esc(meeting.course["room"])}</div></div>')
+                f'<div class="r">{esc(meeting.course.get("room", ""))}</div></div>')
 
     if monday <= now.date() <= monday + timedelta(days=4):
         minutes = now.hour * 60 + now.minute
@@ -517,16 +573,18 @@ def week_grid(schedule, monday, tz, colours, now):
             f'{"".join(cells)}</div></div>')
 
 
-def day_list(schedule, monday, tz, colours, now):
-    """The phone form of the same week — a different shape, not a squeezed grid."""
+def day_list(schedule, monday, tz, colours, now, focus_day=None):
+    """The phone form of the same week — a different shape, not a squeezed grid.
+    Each day carries an anchor, so a tapped chip lands on it."""
     out = []
     for offset in range(7):
         day = monday + timedelta(days=offset)
         meetings = timetable.meetings_on(schedule, day, tz)
         reason = timetable.no_class_reason(schedule, day)
-        if not meetings and not reason and day.weekday() >= 5:
+        if not meetings and not reason and day.weekday() >= 5 and day != focus_day:
             continue
         cls = " today" if day == now.date() else ""
+        cls += " focus" if day == focus_day else ""
         if reason:
             note = reason
         elif meetings:
@@ -538,19 +596,21 @@ def day_list(schedule, monday, tz, colours, now):
             pair = colours.get(meeting.code, ("var(--mut)", "var(--sunk)"))
             gone = " gone" if meeting.end < now else ""
             prep = ""
-            for entry in coursesite.entries_for(day, meeting.code):
-                if entry["kind"] in ("class", "lab") and entry["url"]:
-                    prep = (f'<div class="p"><a href="{esc(entry["url"])}">'
-                            f'{esc(entry["label"])}</a></div>')
+            # A lab can file its prep under the lecture's site ("site_course"):
+            # CS 2000's site lists the labs, but on lab days only CS 2001 meets.
+            site = meeting.course.get("site_course") or meeting.code
+            for entry in coursesite.entries_for(day, site):
+                if entry["kind"] in ("class", "lab") and safe_url(entry.get("url")):
+                    prep = f'<div class="p">{link(esc(entry.get("label")), entry["url"])}</div>'
                     break
             rows.append(
                 f'<div class="ev{gone}" style="color:{pair[0]}">'
                 f'<div class="t" style="color:var(--ink)">{meeting.start.strftime("%-I:%M")}'
                 f'<small>{meeting.end.strftime("%-I:%M %p").lower()}</small></div>'
                 f'<div class="b"><div class="c">{esc(meeting.code)}</div>'
-                f'<div class="r">{esc(meeting.course["room"])} &middot; '
-                f'{esc(meeting.course["instructor"])}</div>{prep}</div></div>')
-        out.append(f'<div class="dsec{cls}"><div class="h">'
+                f'<div class="r">{esc(meeting.course.get("room", ""))} &middot; '
+                f'{esc(meeting.course.get("instructor", ""))}</div>{prep}</div></div>')
+        out.append(f'<div class="dsec{cls}" id="d-{day.isoformat()}"><div class="h">'
                    f'<span class="d">{day.strftime("%A")} {day.day}</span>'
                    f'<span class="s">{esc(note)}</span></div>{"".join(rows)}</div>')
     return "".join(out)
@@ -582,16 +642,33 @@ def term_progress(schedule, workload, today):
         index += 1
     total = sum(v[0] for v in workload.values())
     finished = sum(v[1] for v in workload.values())
-    left = (last - today).days
-    exam_text = ""
+    exam_text, exam_end = "", None
     if schedule.get("exam_start") and schedule.get("exam_end"):
         a = date.fromisoformat(schedule["exam_start"])
-        b = date.fromisoformat(schedule["exam_end"])
+        b = exam_end = date.fromisoformat(schedule["exam_end"])
         exam_text = (f"Exams {a.day}&ndash;{b.day} {b.strftime('%B')}" if a.month == b.month
                      else f"Exams {a.strftime('%-d %B')} &ndash; {b.strftime('%-d %B')}")
+    # Only the teaching weeks have a week number and days left. Outside them the
+    # line used to read "week 1 of 14" with a negative count, which is worse
+    # than saying nothing.
+    term, done = esc(schedule.get('term', 'Term')), f"{finished} of {total} done"
+    begins = date.fromisoformat(start)
+    if today < begins:
+        to_go = (begins - today).days
+        headline = f"{term} &mdash; starts {begins.strftime('%-d %B')}"
+        detail = f"{to_go} day{'' if to_go == 1 else 's'} to go"
+    elif today <= last:
+        left = (last - today).days
+        headline = f"{term} &mdash; week {current_no} of {index - 1}"
+        detail = (f"{done} &nbsp;&middot;&nbsp; "
+                  + ("last day of classes" if left == 0 else f"{left} day{'' if left == 1 else 's'} left"))
+    elif exam_end and today <= exam_end:
+        headline, detail = f"{term} &mdash; final exams", done
+    else:
+        headline, detail = f"{term} &mdash; over", done
     return f"""<div class="term rv d5">
-  <div class="top"><b>{esc(schedule.get('term', 'Term'))} &mdash; week {current_no} of {index - 1}</b>
-    <span class="n">{finished} of {total} done &nbsp;&middot;&nbsp; {left} days left</span></div>
+  <div class="top"><b>{headline}</b>
+    <span class="n">{detail}</span></div>
   <div class="tbar">{"".join(weeks)}</div>
   <div class="lg"><span>Classes end {last.strftime('%-d %B')}</span>
     <span>{exam_text}</span></div>
@@ -601,6 +678,10 @@ def term_progress(schedule, workload, today):
 # ------------------------------------------------------------------- lists
 
 def _group(due_local, now):
+    # Past work gets a heading of its own. Named by weekday, last Monday's
+    # overdue item read "Monday", and next Sunday's merged into yesterday's.
+    if timetable.elapsed(now, due_local) < timedelta(0):
+        return "Overdue"
     if due_local.date() == now.date():
         return "Today"
     if due_local.date() == (now + timedelta(days=1)).date():
@@ -616,22 +697,35 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
     counted, not enumerated.
 
     `links` are lecture mentions matched to Canvas items (lectures.py): those
-    rows get an "also said in class" tag whose tooltip is what was said."""
-    out, heading, beyond = [], None, 0
+    rows get an "also said in class" tag whose tooltip is what was said.
+
+    The cap is applied after the horizon, and whatever it holds back is
+    counted. Capped first, a pile of overdue rows filled the column and pushed
+    tonight's deadline off it without a word. When there is too much, the
+    oldest overdue rows are the ones folded away, never what is still to come."""
+    out, heading = [], None
     cutoff = now + timedelta(days=horizon_days)
-    for row in rows[:limit]:
+    late, ahead, beyond = [], [], 0
+    for row in rows:
         due = parse_utc(row["due_utc"])
         if due is None:
             continue
         local = due.astimezone(tz)
         if local > cutoff:
             beyond += 1
-            continue
+        elif timetable.elapsed(now, local) < timedelta(0):
+            late.append((row, local))
+        else:
+            ahead.append((row, local))
+    shown_late = late if len(late) + len(ahead) <= limit else late[len(late) - min(len(late), limit // 4):]
+    shown_ahead = ahead[:max(limit - len(shown_late), 0)]
+    hidden_late, hidden_ahead = len(late) - len(shown_late), len(ahead) - len(shown_ahead)
+    for row, local in shown_late + shown_ahead:
         group = _group(local, now)
         if group != heading:
             heading = group
-            late = " late" if local < now else ""
-            out.append(f'<div class="grp{late}">{esc(group)}</div>')
+            cls = " late" if group == "Overdue" else ""
+            out.append(f'<div class="grp{cls}">{esc(group)}</div>')
         kind = row["kind"]
         said = lectures.said_in_class(row, links or {})
         if said:
@@ -641,9 +735,7 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
             kind_html = f' <span class="kd" title="{esc(quote)}">{esc(label)}</span>'
         else:
             kind_html = f' <span class="kd">{esc(kind)}</span>' if kind != "assignment" else ""
-        title = esc(row["title"])
-        if row["url"]:
-            title = f'<a href="{esc(row["url"])}">{title}</a>'
+        title = link(esc(row["title"]), row["url"])
         mine = row["source"] == "local"
         delete = ("" if not mine else
                   f'<form method="post" action="/delete">'
@@ -659,9 +751,16 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=N
             f'<input type="hidden" name="id" value="{esc(row["id"])}">'
             f'<button class="tick" type="submit" aria-label="Mark done">&#10003;</button>'
             f'</form>{delete}</div>')
+    more = []
+    if hidden_late:
+        more.append(f"{hidden_late} more overdue")
+    if hidden_ahead:
+        more.append(f"{hidden_ahead} more in the next {horizon_days} days")
     if beyond:
-        plural = "" if beyond == 1 else "s"
-        out.append(f'<div class="more">{beyond} more piece{plural} of work further out</div>')
+        more.append(f"{beyond} further out" if more else
+                    f"{beyond} more piece{'' if beyond == 1 else 's'} of work further out")
+    if more:
+        out.append(f'<div class="more">{" &middot; ".join(more)}</div>')
     return "".join(out)
 
 
@@ -703,13 +802,15 @@ def render_exams(schedule, now, tz):
     if not rows:
         return ""
     out = []
-    for row in sorted(rows, key=lambda r: (r.get("date", ""), r.get("start", ""))):
+    for row in sorted(rows, key=lambda r: (str(r.get("date") or ""), str(r.get("start") or ""))):
         try:
             day = date.fromisoformat(row["date"])
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             continue
         when = day.strftime("%a %-d %B")
-        clock = f'{row.get("start", "")}&ndash;{row.get("end", "")}'.strip("&ndash;")
+        # Only the parts that exist. .strip("&ndash;") strips those characters,
+        # not that string, so an end time of "noon" came out as "noo".
+        clock = "&ndash;".join(esc(part) for part in (row.get("start"), row.get("end")) if part)
         days_off = (day - now.date()).days
         soon = " soon" if 0 <= days_off <= 14 else ""
         out.append(f'<div class="it{soon}"><div>'
@@ -752,9 +853,7 @@ def render_announcements(rows, now, tz, limit=4):
     for row in rows[:limit]:
         posted = parse_utc(row["due_utc"])
         when = posted.astimezone(tz).strftime("%-d %b") if posted else ""
-        title = esc(row["title"])
-        if row["url"]:
-            title = f'<a href="{esc(row["url"])}">{title}</a>'
+        title = link(esc(row["title"]), row["url"])
         out.append(f'<div class="li"><div class="h">{title}</div>'
                    f'<div class="m">{esc(row["course"])} &middot; {esc(when)}</div></div>')
     return "".join(out)
@@ -779,9 +878,7 @@ def render_mail(rows, now, tz, limit=5, colours=None):
     for row in rows[:limit]:
         received = parse_utc(row["due_utc"])
         when = received.astimezone(tz).strftime("%-d %b") if received else ""
-        title = esc(trim_subject(row["title"], row["course"]))
-        if row["url"]:
-            title = f'<a href="{esc(row["url"])}">{title}</a>'
+        title = link(esc(trim_subject(row["title"], row["course"])), row["url"])
         state = "read" if row["done"] else "unread"
         out.append(f'<div class="li {state}"><div class="h">{title}</div>'
                    f'<div class="m">{dot(row["course"], colours)}{esc(row["course"])}'
@@ -805,27 +902,36 @@ def render_changed(rows, now, tz, limit=5):
     out = []
     for row in (rows or [])[:limit]:
         due = parse_utc(row["due_utc"])
-        when = due_label(due.astimezone(tz), now) if due else "no date"
+        when = due_label(due.astimezone(tz), now, with_day=True) if due else "no date"
         if row["is_new"]:
             tag = '<span class="tg">New</span>'
         else:
+            # The old date as a date: relative to now, a deadline moved from
+            # yesterday read "Moved (was 1d late)".
             prev = parse_utc(row["prev_due_utc"])
-            was = f' (was {due_label(prev.astimezone(tz), now)})' if prev else ""
+            was = f' (was {prev.astimezone(tz).strftime("%a %-d %b")})' if prev else ""
             tag = f'<span class="tg mv">Moved{esc(was)}</span>'
         out.append(f'<div class="r">{tag}{esc(row["title"])} &mdash; {esc(when)}</div>')
     return "".join(out)
 
 
 def render_appointments(rows, now, tz, limit=6, colours=None):
+    """Calendar events. No day headings here, so every label carries its day.
+    All-day events are stored at ALL_DAY_TIME on their day (ics.py), which
+    keeps them listed until that day is over."""
     out = []
     for row in (rows or [])[:limit]:
         when = parse_utc(row["due_utc"])
         if not when:
             continue
         local = when.astimezone(tz)
+        if local.time() == ALL_DAY_TIME:
+            label = f"{day_word(local, now)}, all day"
+        else:
+            label = due_label(local, now, with_day=True)
         where = f' &middot; {esc(row["body"])}' if row["body"] else ""
         out.append(f'<div class="li"><div class="h">{esc(row["title"])}</div>'
-                   f'<div class="m"><span class="at">{esc(due_label(local, now))}</span>'
+                   f'<div class="m"><span class="at">{esc(label)}</span>'
                    f'{esc(row["course"])}{where}</div></div>')
     return "".join(out)
 
@@ -923,14 +1029,14 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
 </div>
 
 <div class="rv d1">{hero(schedule, now, tz, colours, walk_minutes)}</div>
-<div class="rv d2">{day_chips(schedule, monday, tz, now, workload)}</div>
+<div class="rv d2">{day_chips(schedule, monday, tz, now, workload, focus_day)}</div>
 
 <div class="cols">
   <div>
     <section class="card rv d3">
       <div class="ch"><h2>{span}</h2>{nav}</div>
       {week_grid(schedule, monday, tz, colours, now)}
-      <div class="dl">{day_list(schedule, monday, tz, colours, now)}</div>
+      <div class="dl">{day_list(schedule, monday, tz, colours, now, focus_day)}</div>
     </section>
     <section class="card rv d4" style="margin-top:16px">
       <div class="ch"><h2>Due</h2></div>

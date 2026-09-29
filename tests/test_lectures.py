@@ -7,7 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -108,7 +108,7 @@ class LecturesTest(unittest.TestCase):
             deadline(10, "Bring a laptop", "bring your laptop on Thursday")]))
         lectures.collect(self.conn, self.cfg, LA)
         now = datetime(2026, 9, 29, 12, 0, tzinfo=LA)
-        html = render.render_tasks(store.upcoming(self.conn), now, LA,
+        html = render.render_tasks(store.upcoming(self.conn, now=now), now, LA,
                                    links=store.get_meta(self.conn, lectures.LINKS_META))
         self.assertIn('title="Lec 6 (2026-09-28): Read an article (“read one of the articles for Thursday”)">'
                       'also said in class', html)

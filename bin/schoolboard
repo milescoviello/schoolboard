@@ -46,7 +46,11 @@ def cmd_connect(args):
     if args.token_file:
         # Preferred for an existing token: never lands in argv, so it stays out
         # of `ps` output and shell history.
-        token = Path(args.token_file).read_text(encoding="utf-8").strip()
+        try:
+            token = Path(args.token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"Can't read {args.token_file}: {exc.strerror}")
+            return 1
         print(f"Reading token from {args.token_file}")
     elif args.token:
         token = args.token.strip()
@@ -85,10 +89,10 @@ def cmd_notify(args):
 
 def cmd_sites(args):
     cfg = config.load_config()
-    _, note = coursesite.refresh(cfg.get("course_sites"))
+    _, note, _ = coursesite.refresh(cfg.get("course_sites"))
     print(note)
-    from datetime import date as _d
-    today = _d.today()
+    # Campus date, not the host's: from 9 pm Pacific the host is already on tomorrow.
+    today = datetime.now(timetable.tzinfo(cfg["timezone"])).date()
     for entry in coursesite.entries_for(today):
         print(f"  today: {entry['course']} {entry['kind']} {entry['label']} {entry['url'] or ''}")
     return 0
@@ -126,9 +130,7 @@ def cmd_set_password(args):
     import secrets
     cfg = config.load_config()
     if args.random:
-        words = ("harbor slate mango pylon cinder willow tundra basalt quartz "
-                 "meadow cobalt lantern").split()
-        password = "-".join(secrets.choice(words) for _ in range(4))
+        password = auth.random_password()
         print(f"\nGenerated password:\n\n    {password}\n")
     else:
         password = args.password or getpass.getpass("New password: ")
@@ -139,9 +141,11 @@ def cmd_set_password(args):
             print("Use at least 8 characters.")
             return 1
     cfg.setdefault("auth", {})["password_hash"] = auth.hash_password(password)
-    auth.ensure_secret(cfg, config.save_config)
+    # A new secret, so a new password also signs out every existing session: a
+    # cookie is otherwise good for 30 days whatever the password became.
+    cfg["auth"]["session_secret"] = secrets.token_urlsafe(32)
     config.save_config(cfg)
-    print("Saved. Restart the service for it to take effect:")
+    print("Saved, and every existing session is signed out. Restart the service for it to take effect:")
     print("  sudo service schoolboard restart")
     return 0
 

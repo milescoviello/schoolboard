@@ -11,7 +11,6 @@ Every rule is deduplicated through the `notifications` table, and the first run
 primes that table without sending, so enabling this does not fire a backlog at
 someone's phone.
 """
-import os
 import ssl
 import urllib.error
 import urllib.parse
@@ -83,7 +82,7 @@ def _hours(delta):
 
 
 def _fmt_due(due_local, now):
-    delta = due_local - now
+    delta = timetable.elapsed(now, due_local)
     hours = _hours(delta)
     if hours < 1:
         return f"in {max(0, int(delta.total_seconds() // 60))} min"
@@ -111,6 +110,15 @@ def quiet_window_start(cfg, moment):
     if start > end and moment.hour < end:
         boundary -= timedelta(days=1)      # window began the previous evening
     return boundary
+
+
+def quiet_window_end(cfg, moment):
+    """If `moment` falls inside quiet hours, when that quiet window ends."""
+    began = quiet_window_start(cfg, moment)
+    if began is None:
+        return None
+    nc = cfg["notify"]
+    return began + timedelta(hours=(int(nc["quiet_end"]) - int(nc["quiet_start"])) % 24)
 
 
 def effective_send_time(ideal, cfg):
@@ -155,7 +163,7 @@ def recap_lines(conn, index, links, meeting, now, tz):
     for row in store.on_day(conn, now.astimezone(timezone.utc).isoformat(),
                             end_of_day.astimezone(timezone.utc).isoformat(), include_done=False):
         when = _parse(row["due_utc"])
-        if row["course"] == meeting.code and when and now < when.astimezone(tz) <= end_of_day:
+        if row["course"] == meeting.code and when and now < when <= end_of_day:
             line = f"• {when.astimezone(tz).strftime('%-I:%M %p').lower()} {_title(row, links)}"
             # What the professor said often says more than the Canvas title: which article.
             line += "".join(f"\n   ↳ {_esc(s['what'])}" for s in links.get(row["id"], [])[:2])
@@ -172,10 +180,10 @@ def build_messages(conn, schedule, cfg, now, tz):
     Keys are stable and unique per event, so a rule that keeps matching for an
     hour still only sends once.
 
-    `allow_in_quiet` is set when the message was *scheduled* to go out before
-    quiet hours began. Otherwise a tick arriving a minute late would hold it,
-    quiet hours would end after the deadline had passed, and it would never be
-    sent at all.
+    `allow_in_quiet` is set on a due warning when holding it would make it
+    pointless: the deadline passes before quiet hours end, so a warning pulled
+    back to just before quiet began still goes out if the tick is late. One
+    that can wait (work first synced at 23:10, due tomorrow evening) waits.
     """
     nc = cfg.get("notify", {})
     out = []
@@ -195,7 +203,7 @@ def build_messages(conn, schedule, cfg, now, tz):
             out.append((
                 f"class:{course['code']}:{now.date().isoformat()}",
                 f"<b>{_esc(course['code'])}</b> in {minutes} min\n"
-                f"{_esc(course['room'])} · {meeting.start.strftime('%-I:%M %p').lower()}"
+                f"{_esc(course.get('room', ''))} · {meeting.start.strftime('%-I:%M %p').lower()}"
                 + "".join("\n" + line for line in recap_lines(conn, index, links, meeting, now, tz)),
                 False,
             ))
@@ -205,32 +213,39 @@ def build_messages(conn, schedule, cfg, now, tz):
     # meant 24h always matched first and broke out of the loop, so the 3h
     # escalation could never fire for anything.
     thresholds = sorted(float(h) for h in nc.get("due_thresholds_hours", [24, 3]))
-    for row in store.upcoming(conn, limit=60):
-        due = _parse(row["due_utc"])
+    quiet_ends = quiet_window_end(cfg, now)
+    for row in store.upcoming(conn, limit=60, now=now):
+        due = _parse(row["due_utc"])   # UTC, so the arithmetic below is real time, DST or not
         if not due:
             continue
         local = due.astimezone(tz)
-        remaining = _hours(local - now)
-        if remaining <= 0:
+        if due <= now:
             continue
         for threshold in thresholds:
-            send_at = effective_send_time(local - timedelta(hours=threshold), cfg)
-            if now >= send_at:
+            send_at = effective_send_time((due - timedelta(hours=threshold)).astimezone(tz), cfg)
+            if now.astimezone(timezone.utc) >= send_at:
                 label = f"{int(threshold)}h"
+                # Once a deadline has moved, the key carries it, so an extension
+                # gets its warnings again. Unmoved items keep the keys they were
+                # already sent under.
+                moved = f":{row['due_utc']}" if row["prev_due_utc"] else ""
                 out.append((
-                    f"due:{row['id']}:{label}",
+                    f"due:{row['id']}:{label}{moved}",
                     f"<b>Due {_fmt_due(local, now)}</b>\n"
                     f"{_title(row, links)}\n{_esc(row['course'])}",
-                    not in_quiet_hours(cfg, send_at),
+                    quiet_ends is None or due <= quiet_ends,
                 ))
                 break
 
     # 3. Anything that has gone quiet. A source that stops updating leaves the
     #    board looking healthy while showing stale data, so it has to speak up.
+    #    Once a day, the day turning over when quiet hours end: at midnight, a
+    #    source that stayed stale was pushed at 00:00 every night.
     from . import status
+    day = (now - timedelta(hours=int(nc.get("quiet_end") or 0))).date()
     for row in status.stale_sources(cfg, conn, store.get_meta):
         out.append((
-            f"stale:{row['name']}:{now.date().isoformat()}",
+            f"stale:{row['name']}:{day.isoformat()}",
             f"<b>{_esc(row['name'])} has gone quiet</b>\n"
             f"Last update {_esc(row['label'])}."
             + (f"\n{_esc(row['note'])}" if row["note"] else ""),
@@ -271,7 +286,7 @@ def weekly_text(conn, schedule, now, tz, index=None, links=None):
             lines.append(f"  {day.strftime('%a')}  clear")
     horizon = now + timedelta(days=8)
     due = []
-    for row in store.upcoming(conn, limit=40):
+    for row in store.upcoming(conn, limit=40, now=now):
         when = _parse(row["due_utc"])
         if not when:
             continue
@@ -307,14 +322,14 @@ def digest_text(conn, schedule, now, tz, links=None):
     else:
         for m in meetings:
             lines.append(f"  {m.start.strftime('%-I:%M').rjust(5)}  "
-                         f"{_esc(m.code)} · {_esc(m.course['room'])}")
+                         f"{_esc(m.code)} · {_esc(m.course.get('room', ''))}")
     soon = []
-    for row in store.upcoming(conn, limit=40):
+    for row in store.upcoming(conn, limit=40, now=now):
         due = _parse(row["due_utc"])
         if not due:
             continue
         local = due.astimezone(tz)
-        if 0 < _hours(local - now) <= 48:
+        if 0 < _hours(due - now) <= 48:
             soon.append(f"  {_fmt_due(local, now)} — {_title(row, links)} ({_esc(row['course'])})")
     if soon:
         lines.append("")
@@ -356,6 +371,10 @@ def tick(conn, schedule, cfg, now, tz, force=False):
             mark_sent(conn, key, "(primed, not sent)")
         store.set_meta(conn, "notify_primed", True)
         return f"primed {len(fresh)} existing items without sending"
+    if force:
+        # Sending counts as priming; left unset, the next ordinary tick would
+        # prime instead and swallow whatever had just come due.
+        store.set_meta(conn, "notify_primed", True)
 
     if in_quiet_hours(cfg, now):
         held = [m for m in fresh if not m[2]]

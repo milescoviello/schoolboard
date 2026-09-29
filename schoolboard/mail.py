@@ -62,8 +62,12 @@ def classify(message, codes, names):
         for norm_code, pretty in codes.items():
             if norm_code in blob:
                 return pretty, reason
+    # Whole words only: as a substring, "WANG" matched Hwang, Swanger Housing
+    # and NewAngle Media, and filed them all as that instructor's course.
+    sender_words = set(re.findall(r"[A-Z0-9]+", f"{message.get('sender','')} "
+                                                f"{message.get('from_address','')}".upper()))
     for name, code in names.items():
-        if name in sender_blob:
+        if name in sender_words:
             return code, "instructor"
     return None, None
 
@@ -78,7 +82,7 @@ def load(path=None):
         return None
 
 
-def collect(schedule, path=None, days=21):
+def collect(schedule, path=None, days=21, tz=None):
     """Normalised mail items plus a short report."""
     data = load(path)
     if data is None:
@@ -114,12 +118,13 @@ def collect(schedule, path=None, days=21):
             "title": message.get("subject") or "(no subject)",
             # received_at, NOT a due date — store.upcoming() excludes kind='mail'
             # for exactly that reason.
-            "due_utc": when.isoformat(),
+            # In UTC like everything else, so ORDER BY due_utc is time order.
+            "due_utc": when.astimezone(timezone.utc).isoformat(),
             "url": message.get("web_link"),
             "done": bool(message.get("is_read")),
             "body": (message.get("preview") or "")[:300],
         })
-    write_dropped_log(dropped)
+    write_dropped_log(dropped, tz=tz)
     return items, {
         "available": True,
         "dropped": len(dropped),
@@ -133,7 +138,7 @@ def collect(schedule, path=None, days=21):
 DROPPED_LOG = ROOT / "mail-dropped.log"
 
 
-def write_dropped_log(dropped, path=None):
+def write_dropped_log(dropped, path=None, tz=None):
     """Snapshot of what the filter rejected, rewritten each sync.
 
     Not appended: this is "what is currently being hidden", not a history.
@@ -144,7 +149,8 @@ def write_dropped_log(dropped, path=None):
              ""]
     for when, message in sorted(dropped, key=lambda d: d[0], reverse=True):
         unread = "UNREAD" if not message.get("is_read") else "read  "
-        lines.append(f"{when.astimezone().strftime('%Y-%m-%d %H:%M')}  {unread}  "
+        # Campus time: a bare astimezone() is the host's, which is Eastern.
+        lines.append(f"{when.astimezone(tz or timezone.utc).strftime('%Y-%m-%d %H:%M')}  {unread}  "
                      f"{(message.get('from_address') or '')[:44]:<44}  "
                      f"{(message.get('subject') or '')[:70]}")
     try:

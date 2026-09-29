@@ -25,8 +25,11 @@ SOURCE = "scribe"
 EXPORT_VERSION = 1
 LINKS_META = "scribe_links"
 
+# Weekdays and "tomorrow" say when, not what: "bring a laptop on Thursday" is
+# not the "Thursday reading response".
 _STOP = set("""a an and are as at be by class classes do due for from in into is it its next of on one or our
-plus the their this to two three your you we before after about why how what which""".split())
+plus the their this to two three your you we before after about why how what which bring please
+monday tuesday wednesday thursday friday saturday sunday today tomorrow tonight week weekend""".split())
 _SAME = {"hw": "homework", "readings": "read", "reading": "read", "reread": "read", "articles": "article",
          "chapters": "chapter", "reflections": "reflection", "posts": "post", "problems": "problem",
          "questions": "question", "drafts": "draft", "quizzes": "quiz", "exams": "exam"}
@@ -55,10 +58,12 @@ def load(cfg):
         return None
     lectures = []
     for lec in index.get("lectures") or []:
-        if not _usable(lambda: lec["course"] and date.fromisoformat(lec["date"]) and _utc(lec["start"])):
+        if not _usable(lambda: lec["course"] and date.fromisoformat(lec["date"]) and _aware(lec["start"])):
             continue
-        lec["deadlines"] = [d for d in lec.get("deadlines") or []
-                            if _usable(lambda: d["id"] and d["what"] and _utc(d["due"]))]
+        deadlines, recap = lec.get("deadlines"), lec.get("recap")
+        lec["deadlines"] = [d for d in (deadlines if isinstance(deadlines, list) else [])
+                            if _usable(lambda: d["id"] and isinstance(d["what"], str) and _aware(d["due"]))]
+        lec["recap"] = [p for p in (recap if isinstance(recap, list) else []) if isinstance(p, str)]
         lectures.append(lec)
     index["lectures"] = lectures
     return index
@@ -73,17 +78,32 @@ def _words(text):
     return out
 
 
+_SPELLED = {w: str(n) for n, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve"
+                                              .split()) if n >= 2}   # not "one": "read one of the articles"
+
+
 def _numbers(text):
-    return set(re.findall(r"\d+", text))
+    return set(re.findall(r"\d+", text)) | {_SPELLED[w] for w in re.findall(r"[a-z]+", text.lower()) if w in _SPELLED}
 
 
 def _utc(value):
     when = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return when.astimezone(timezone.utc)
+    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when.astimezone(timezone.utc)
+
+
+def _aware(value):
+    """An export timestamp with its offset. A naive one would be read in the
+    host's timezone, which is not the campus's."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
 
 
 def match(deadline, course, rows, tz):
-    """The Canvas row a lecture deadline is, or None."""
+    """The Canvas row a lecture deadline is, or None.
+
+    A wrong match hides a deadline, a missed one only shows it twice, so this
+    leans towards missing: two shared words, or every word of a short title
+    ("Essay 1" for "the essay"). A Canvas item that has since been extended
+    still matches on the date it had when it was said."""
     due = _utc(deadline["due"]).astimezone(tz).date()
     said = _words(deadline["what"] + " " + (deadline.get("quote") or ""))
     said_numbers = _numbers(deadline["what"])
@@ -91,12 +111,16 @@ def match(deadline, course, rows, tz):
     for row in rows:
         if row["course"] != course or not row["due_utc"] or not str(row["id"]).startswith("canvas:"):
             continue
-        if abs((_utc(row["due_utc"]).astimezone(tz).date() - due).days) > 1:
+        dates = {_utc(v).astimezone(tz).date() for v in (row["due_utc"], row["prev_due_utc"]) if v}
+        if not any(abs((d - due).days) <= 1 for d in dates):
             continue
         numbers = _numbers(row["title"])
         if said_numbers and numbers and not said_numbers & numbers:
             continue  # "homework 3" isn't "Homework 2"
-        score = len(said & _words(row["title"]))
+        title = _words(row["title"])
+        score = len(said & title)
+        if score < 2 and not (score and score == len(title)):
+            continue
         if score > best_score:
             best, best_score = row, score
     return best
@@ -110,7 +134,11 @@ def collect(conn, cfg, tz):
     index = load(cfg)
     if index is None:
         return None
-    rows = conn.execute("SELECT id, course, title, due_utc FROM items WHERE source='canvas'").fetchall()
+    # Work only: an announcement repeating a deadline is not the deadline, and
+    # matching one would hide it (announcements never reach Due or the reminders).
+    holes = ",".join("?" * len(store.NON_WORK_KINDS))
+    rows = conn.execute(f"SELECT id, course, title, due_utc, prev_due_utc FROM items "
+                        f"WHERE source='canvas' AND kind NOT IN ({holes})", store.NON_WORK_KINDS).fetchall()
     items, links = [], {}
     for lec in index.get("lectures", []):
         for d in lec.get("deadlines", []):
@@ -159,7 +187,7 @@ def last_before(index, code, when):
         return None
     earlier = [lec for lec in index.get("lectures", [])
                if lec["course"] == code and lec.get("topic") and _utc(lec["start"]) < when]
-    return max(earlier, key=lambda lec: lec["start"], default=None)
+    return max(earlier, key=lambda lec: _utc(lec["start"]), default=None)
 
 
 def between(index, start, end):
@@ -167,7 +195,7 @@ def between(index, start, end):
     if not index:
         return []
     return sorted((lec for lec in index.get("lectures", []) if start <= _utc(lec["start"]) < end),
-                  key=lambda lec: lec["start"])
+                  key=lambda lec: _utc(lec["start"]))
 
 
 def lecture_age_days(lec, now):

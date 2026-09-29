@@ -29,7 +29,8 @@
       "days": ["Thu"], "start": "14:00", "end": "15:40",
       "room": "Main Hall 102", "instructor": "A. Lecturer",
       "starts_on": "2026-09-17",
-      "note": "Optional: shown only until the first meeting."
+      "site_course": "CS 1000",
+      "note": "starts_on: optional, hidden until the first meeting. site_course: optional, the course whose site lists this one's prep (a lab filed under its lecture)."
     },
     {
       "code": "GEN 1010", "title": "An Online Course",

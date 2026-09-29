@@ -4,6 +4,7 @@ Two files, deliberately separate:
   schedule.json  — the term timetable. Safe to commit; no secrets.
   config.json    — tokens and host settings. Never committed (see .gitignore).
 """
+import copy
 import json
 import os
 from pathlib import Path
@@ -78,17 +79,45 @@ def load_config():
     user = {}
     if path.exists():
         user = json.loads(path.read_text())
-    cfg = _merge(DEFAULTS, user)
+    # A copy: _merge shares the sub-dicts it doesn't override, so setting
+    # cfg["auth"]["password_hash"] used to write into DEFAULTS itself.
+    cfg = _merge(copy.deepcopy(DEFAULTS), user)
     # Environment overrides win, so a token can be injected without touching disk.
     if os.environ.get("SCHOOLBOARD_CANVAS_TOKEN"):
         cfg["canvas"]["token"] = os.environ["SCHOOLBOARD_CANVAS_TOKEN"]
     return cfg
 
 
+def _changed(cfg, base):
+    """What in `cfg` differs from `base`. A save keeps the user's own settings,
+    not a frozen copy of every default that a later default can't reach."""
+    out = {}
+    for key, value in cfg.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            inner = _changed(value, base[key])
+            if inner:
+                out[key] = inner
+        elif key not in base or base[key] != value:
+            out[key] = value
+    return out
+
+
 def save_config(cfg):
+    """Write config.json whole or not at all: a temp file, created 0600 so the
+    token is never readable, then renamed over it. Written in place, a page
+    loading mid-write read half a file and 500'd."""
     path = ROOT / "config.json"
-    path.write_text(json.dumps(cfg, indent=2) + "\n")
-    path.chmod(0o600)
+    cfg = json.loads(json.dumps(cfg))
+    injected = os.environ.get("SCHOOLBOARD_CANVAS_TOKEN")
+    if injected and cfg.get("canvas", {}).get("token") == injected:
+        # Injected so that it needn't touch disk; keep what the file had.
+        on_disk = json.loads(path.read_text()) if path.exists() else {}
+        cfg["canvas"]["token"] = (on_disk.get("canvas") or {}).get("token", "")
+    tmp = path.with_name(".config.json.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as out:
+        out.write(json.dumps(_changed(cfg, DEFAULTS), indent=2) + "\n")
+    os.replace(tmp, path)
     return path
 
 

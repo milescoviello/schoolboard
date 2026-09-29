@@ -1,4 +1,6 @@
 config.json
+.config.json.tmp
+*.lock
 *.db
 *.db-wal
 *.db-shm

@@ -2,7 +2,7 @@
 
 All arithmetic happens in the configured campus timezone, never the host's.
 """
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 DAY_INDEX = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
@@ -24,7 +24,7 @@ class Meeting:
 
     @property
     def code(self):
-        return self.course["code"]
+        return self.course.get("code", "")
 
     def status(self, now):
         if now < self.start:
@@ -32,7 +32,7 @@ class Meeting:
         return "current" if now <= self.end else "past"
 
     def minutes_until(self, now):
-        return int((self.start - now).total_seconds() // 60)
+        return int(elapsed(now, self.start).total_seconds() // 60)
 
 
 def _date(value):
@@ -72,16 +72,21 @@ def meetings_on(schedule, day, tz):
         return []
     weekday = DAY_NAMES[day.weekday()]
     out = []
-    for course in schedule["courses"]:
-        if course.get("online") or weekday not in course.get("days", []):
+    for course in schedule.get("courses") or []:
+        if course.get("online") or weekday not in (course.get("days") or []):
             continue
-        starts_on = course.get("starts_on")
-        if starts_on and day < date.fromisoformat(starts_on):
+        # A hand-edited schedule.json with a course half filled in skips that
+        # course; it must not take the whole page down with it.
+        try:
+            starts_on = course.get("starts_on")
+            if starts_on and day < date.fromisoformat(starts_on):
+                continue
+            ends_on = course.get("ends_on")
+            if ends_on and day > date.fromisoformat(ends_on):
+                continue
+            out.append(Meeting(course, day, tz))
+        except (KeyError, TypeError, ValueError, AttributeError):
             continue
-        ends_on = course.get("ends_on")
-        if ends_on and day > date.fromisoformat(ends_on):
-            continue
-        out.append(Meeting(course, day, tz))
     return sorted(out, key=lambda m: m.start)
 
 
@@ -109,8 +114,14 @@ def week_ahead(schedule, now, tz, days=7):
 
 
 def online_courses(schedule):
-    return [c for c in schedule["courses"] if c.get("online")]
+    return [c for c in schedule.get("courses") or [] if c.get("online")]
 
 
 def tzinfo(name):
     return ZoneInfo(name)
+
+
+def elapsed(start, end):
+    """end - start in real time. Two datetimes sharing one ZoneInfo subtract by
+    the wall clock, so across a DST change (1 November 2026) they are an hour out."""
+    return end.astimezone(timezone.utc) - start.astimezone(timezone.utc)

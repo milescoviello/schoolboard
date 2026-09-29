@@ -65,9 +65,14 @@ NON_WORK_KINDS = ("announcement", "mail", "appointment")
 
 
 def upsert_items(conn, items):
-    """Insert or update. Returns (new, updated)."""
+    """Insert or update. Returns (new, updated).
+
+    One write transaction, taken up front: as a read then a write, two syncs
+    at once both saw a row missing and the second INSERT failed on its id."""
     now = _now()
     new = updated = 0
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
     for it in items:
         cur = conn.execute("SELECT due_utc FROM items WHERE id = ?", (it["id"],))
         row = cur.fetchone()
@@ -99,6 +104,20 @@ def upsert_items(conn, items):
     return new, updated
 
 
+def retire(conn, source, seen, start_utc, end_utc, keep_kinds=NON_WORK_KINDS):
+    """Delete `source` rows due in [start, end) that the last clean fetch of
+    that window didn't return: deleted upstream, or moved out of it. Kept, they
+    sat in Due soon for good, since nothing else ever looks at last_seen.
+    Only after a fetch that succeeded, or an outage would empty the board."""
+    holes = ",".join("?" * len(keep_kinds))
+    rows = conn.execute(f"SELECT id FROM items WHERE source=? AND kind NOT IN ({holes}) "
+                        f"AND due_utc >= ? AND due_utc < ?", (source, *keep_kinds, start_utc, end_utc))
+    gone = [r["id"] for r in rows if r["id"] not in seen]
+    conn.executemany("DELETE FROM items WHERE id=?", [(i,) for i in gone])
+    conn.commit()
+    return len(gone)
+
+
 def set_meta(conn, key, value):
     conn.execute("INSERT INTO meta (key,value) VALUES (?,?) "
                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
@@ -110,16 +129,25 @@ def get_meta(conn, key, default=None):
     return json.loads(row["value"]) if row else default
 
 
-def upcoming(conn, limit=40, stale_days=14):
-    """Dated, unfinished work. Announcements are excluded on purpose: their
-    timestamp is when they were posted, not something owed, and treating the two
-    alike renders every announcement as overdue."""
-    floor = (datetime.now(timezone.utc) - timedelta(days=stale_days)).isoformat()
+def upcoming(conn, limit=40, stale_days=14, now=None):
+    """Dated, unfinished work: all of it that went overdue in the last
+    `stale_days`, then the next `limit` still to come. The limit is on what is
+    to come only. On both, a pile of overdue rows pushed what is due tonight out
+    of the list, and out of the reminders.
+
+    Announcements are excluded on purpose: their timestamp is when they were
+    posted, not something owed, and treating the two alike renders every
+    announcement as overdue."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    floor = (now - timedelta(days=stale_days)).isoformat()
     holes = ",".join("?" * len(NON_WORK_KINDS))
-    return conn.execute(
-        f"SELECT * FROM items WHERE done=0 AND due_utc IS NOT NULL "
-        f"AND kind NOT IN ({holes}) AND due_utc > ? "
-        f"ORDER BY due_utc ASC LIMIT ?", (*NON_WORK_KINDS, floor, limit)).fetchall()
+    base = (f"SELECT * FROM items WHERE done=0 AND due_utc IS NOT NULL "
+            f"AND kind NOT IN ({holes}) ")
+    late = conn.execute(base + "AND due_utc > ? AND due_utc <= ? ORDER BY due_utc ASC",
+                        (*NON_WORK_KINDS, floor, now.isoformat())).fetchall()
+    ahead = conn.execute(base + "AND due_utc > ? ORDER BY due_utc ASC LIMIT ?",
+                         (*NON_WORK_KINDS, now.isoformat(), limit)).fetchall()
+    return late + ahead
 
 
 def undated(conn, limit=20):
@@ -141,6 +169,10 @@ def recently_changed(conn, hours=36, limit=6):
     """
     baseline = get_meta(conn, "changed_baseline")
     if baseline is None:
+        # Not before there is anything to compare against: stamped on an empty
+        # store, the first import would all read as new.
+        if conn.execute("SELECT 1 FROM items LIMIT 1").fetchone() is None:
+            return []
         baseline = datetime.now(timezone.utc).isoformat()
         set_meta(conn, "changed_baseline", baseline)
     floor = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -188,14 +220,22 @@ def completed(conn, limit=40):
         (*NON_WORK_KINDS, limit)).fetchall()
 
 
-def workload(conn):
-    """{date -> [total, done]} for every dated item, for the term strip."""
+def workload(conn, tz):
+    """{campus date -> (total, done)} for every dated item, for the term strip
+    and the day chips. Grouped by the UTC date, every deadline after 5 pm landed
+    on the next day's chip."""
     holes = ",".join("?" * len(NON_WORK_KINDS))
-    rows = conn.execute(
-        f"SELECT substr(due_utc,1,10) d, COUNT(*) n, SUM(done) f FROM items "
-        f"WHERE kind NOT IN ({holes}) AND due_utc IS NOT NULL GROUP BY d",
-        NON_WORK_KINDS).fetchall()
-    return {r["d"]: (r["n"], r["f"] or 0) for r in rows}
+    out = {}
+    for row in conn.execute(f"SELECT due_utc, done FROM items WHERE kind NOT IN ({holes}) "
+                            f"AND due_utc IS NOT NULL", NON_WORK_KINDS):
+        try:
+            due = datetime.fromisoformat(row["due_utc"].replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        day = (due if due.tzinfo else due.replace(tzinfo=timezone.utc)).astimezone(tz).date().isoformat()
+        total, done = out.get(day, (0, 0))
+        out[day] = (total + 1, done + bool(row["done"]))
+    return out
 
 
 def personal(conn, include_done=False, limit=40):

@@ -50,13 +50,18 @@ def sources(cfg, conn, get_meta):
     """[{name, age, stale, note}] — one row per source, worst first."""
     out = []
 
-    canvas_age = _age_seconds(get_meta(conn, "last_sync"))
+    # The last sync that reached Canvas, not the last sync: that is stamped
+    # whether Canvas answered or not, so two days of 401s read "just now".
+    canvas_age = _age_seconds(get_meta(conn, "canvas_ok_at"))
+    error = get_meta(conn, "last_sync_error") or ""
     out.append({
         "name": "Canvas",
         "age": canvas_age,
         # Sync runs every 15 min; three misses is a real fault, not a blip.
-        "stale": canvas_age is not None and canvas_age > cfg.get("sync_minutes", 15) * 60 * 3,
-        "note": get_meta(conn, "last_sync_error") or "",
+        # Never reached and failing is stale too; never reached and not failing
+        # is a first sync still to come, or no token.
+        "stale": (canvas_age > cfg.get("sync_minutes", 15) * 60 * 3) if canvas_age is not None else bool(error),
+        "note": error,
     })
 
     mail_age = _age_seconds(_file_stamp("mail.json", "generated_at"))
@@ -83,7 +88,8 @@ def sources(cfg, conn, get_meta):
 
     for row in out:
         row["label"] = humanise(row["age"])
-    out.sort(key=lambda r: (not r["stale"], -(r["age"] or 0)))
+    # Worst first, and "never" is the worst age there is.
+    out.sort(key=lambda r: (not r["stale"], -(r["age"] if r["age"] is not None else float("inf"))))
     return out
 
 

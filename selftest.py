@@ -11,9 +11,10 @@ a clock that moves. This sweeps the day rather than trusting whatever time it
 happens to be when someone runs it.
 """
 import json
+import re
 import sys
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, "/home/miles/schoolboard")
 from schoolboard import config, render, store, timetable  # noqa: E402
@@ -31,6 +32,40 @@ def check(label, fn):
         FAIL.append((label, f"suspiciously small page: {len(html)} bytes"))
     if "Traceback" in html:
         FAIL.append((label, "traceback rendered into the page"))
+    # Crashes are not the only failure: these rendered for weeks without one.
+    for pattern, why in ((r"-\d+ days? left", "negative days left"), (r"Lec None", "lecture number None"),
+                         (r'href="\s*javascript:', "javascript: link")):
+        if re.search(pattern, html, re.I):
+            FAIL.append((label, why))
+
+
+def sample_rows(now):
+    """Invented work around `now`, so every sweep renders real task rows: overdue,
+    tonight, tomorrow, later this week, past the horizon, one of his own, one
+    said in class, and a link that must not be followed. The repo is public,
+    so none of it is real."""
+    def at(delta, **extra):
+        due = (now + delta).astimezone(timezone.utc).isoformat()
+        row = {"id": f"test:{len(rows)}", "source": "canvas", "kind": "assignment", "course": "TEST 1000",
+               "title": f"Sample {len(rows)}", "due_utc": due, "url": "https://example.edu/a", "done": 0,
+               "body": None}
+        row.update(extra)
+        rows.append(row)
+    rows = []
+    at(timedelta(days=-3))
+    at(timedelta(minutes=-20), url="javascript:alert(1)")
+    at(timedelta(hours=2))
+    at(timedelta(days=1), source="local", kind="task", url=None)
+    at(timedelta(days=4), source="scribe", kind="said in class", url=None,
+       body=json.dumps({"lecture": None, "date": "2026-09-28", "what": "Read", "quote": "read it"}))
+    at(timedelta(days=20))
+    return rows
+
+
+def tasks_at(conn, now, tz):
+    rows = list(store.upcoming(conn, now=now)) + sample_rows(now)
+    rows.sort(key=lambda r: render.parse_utc(r["due_utc"]))
+    return render.render_tasks(rows, now, tz)
 
 
 def check_json(label, fn):
@@ -82,9 +117,9 @@ def main():
     schedule = config.load_schedule()
     tz = timetable.tzinfo(config.timezone_name())
     conn = store.connect()
-    tasks = render.render_tasks(store.upcoming(conn), datetime.now(tz), tz)
+    tasks = tasks_at(conn, datetime.now(tz), tz)
     done = render.render_completed(store.completed(conn), datetime.now(tz), tz)
-    workload = store.workload(conn)
+    workload = store.workload(conn, tz)
 
     # Every hour of several representative days, so the now-bar, the day
     # progress bar, "in class", "next up" and the idle state all get exercised.
@@ -92,6 +127,9 @@ def main():
             date(2026, 9, 11),   # a full teaching day
             date(2026, 9, 12),   # a Saturday
             date(2026, 10, 12),  # a holiday
+            date(2026, 10, 31),  # the day before DST ends
+            date(2026, 11, 1),   # DST ends: 1 am happens twice
+            date(2026, 11, 2),   # the first teaching day after
             date(2026, 11, 26),  # fall break
             date(2026, 12, 16),  # exam period
             date(2027, 1, 20)]   # after the term
@@ -99,7 +137,7 @@ def main():
         for hour in range(0, 24):
             now = datetime(day.year, day.month, day.day, hour, 30, tzinfo=tz)
             check(f"{day} {hour:02d}:30",
-                  lambda n=now: render.page(schedule, n, tz, tasks, "", "t", True,
+                  lambda n=now: render.page(schedule, n, tz, tasks_at(conn, n, tz), "", "t", True,
                                             workload=workload, completed=done))
 
     # Weeks either side of the term, where there is nothing to draw.
@@ -139,7 +177,7 @@ def main():
     check("login error", lambda: render.login_page(error="nope"))
     check("login throttled", lambda: render.login_page(retry_after=900))
 
-    total = 7 * 24 + 6 + (2 * 2 * 4) + 7 * 3 * 2 + 4
+    total = len(days) * 24 + 6 + (2 * 2 * 4) + len(days) * 3 * 2 + 4
     if FAIL:
         print(f"FAILED {len(FAIL)} of {total}")
         for label, why in FAIL[:12]:

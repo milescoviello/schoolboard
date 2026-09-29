@@ -9,6 +9,7 @@ stdlib only — no requests. This runs on a 2009 Core2Duo with no pip packages,
 and every dependency avoided is a wheel that can't fail to build.
 """
 import html
+import http.client
 import json
 import re
 import shutil
@@ -51,6 +52,11 @@ class Canvas:
             raise CanvasError(f"Canvas returned HTTP {exc.code} for {url}") from exc
         except urllib.error.URLError as exc:
             raise CanvasError(f"Could not reach Canvas: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            # urllib wraps only the connect: a timeout waiting for the reply or
+            # mid-body, a cut connection, or a 200 maintenance page in HTML all
+            # arrive raw, and used to escape the sync.
+            raise CanvasError(f"Canvas request failed: {type(exc).__name__}: {exc}") from exc
 
     def get(self, path, **params):
         """GET with Link-header pagination followed to the end."""
@@ -74,7 +80,9 @@ class Canvas:
         return self.get("courses", enrollment_state="active",
                         include=["term", "total_scores"], state=["available"])
 
-    def planner(self, days_back=7, days_ahead=45):
+    def planner(self, days_back=14, days_ahead=45):
+        # days_back matches store.upcoming's stale_days: a late submission of
+        # something due 9 days ago must still come back marked done.
         now = datetime.now(timezone.utc)
         return self.get(
             "planner/items",
@@ -123,9 +131,10 @@ def course_labeller(canvas_courses, schedule):
             blob = _norm_code(field)
             if not blob:
                 continue
-            hit = next((pretty for norm, pretty in known.items() if norm and norm in blob), None)
-            if hit:
-                label = hit
+            # The code that comes first in the text, not first in the schedule.
+            found = [(blob.find(norm), pretty) for norm, pretty in known.items() if norm and norm in blob]
+            if found:
+                label = min(found)[1]
                 break
         table[course["id"]] = label
     return table
@@ -147,9 +156,12 @@ _CHECKPOINT = {"reply_to_topic": "initial post", "reply_to_entry": "reply to cla
 
 
 def _is_done(entry):
-    override = entry.get("planner_override") or {}
-    if override.get("marked_complete") or override.get("dismissed"):
-        return True
+    override = entry.get("planner_override")
+    if override:
+        # An override is the answer when there is one, as in Canvas's own
+        # planner: undoing a submitted item sets marked_complete false, and
+        # falling through to "submitted" would re-mark it done on every sync.
+        return bool(override.get("marked_complete") or override.get("dismissed"))
     subs = entry.get("submissions")
     if isinstance(subs, dict) and (subs.get("submitted") or subs.get("excused")):
         return True
@@ -281,6 +293,8 @@ def set_complete(base_url, token, plannable_type, plannable_id, complete=True):
         raise CanvasError(f"Canvas refused the update (HTTP {exc.code}) {detail}") from exc
     except urllib.error.URLError as exc:
         raise CanvasError(f"Could not reach Canvas: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise CanvasError(f"Canvas request failed: {type(exc).__name__}: {exc}") from exc
 
 
 def collect(base_url, token, schedule):
@@ -317,9 +331,14 @@ def html_to_text(markup):
     return "\n".join(line for line in lines if line).strip()
 
 
-FILE_LINK = re.compile(r'<a\b([^>]*data-api-endpoint="([^"]+/api/v1/courses/\d+/files/\d+)"[^>]*)>(.*?)</a>',
+FILE_LINK = re.compile(r'<a\b([^>]*data-api-endpoint="[^"]*/api/v1/courses/(\d+)/files/(\d+)"[^>]*)>(.*?)</a>',
                        re.S | re.I)
-SOLUTIONS = re.compile(r"solution|\bhws\d|answer key|\bkey\b", re.I)
+SOLUTIONS = re.compile(r"\bsolutions?\b|\bsol(?:n|ns|s)?\b|\bhws\d|answer key|\banswers\b|\bkey\b", re.I)
+
+
+def _solutions(text):
+    """"hw3_key.pdf" and "HW3 Solns" too: \b doesn't see a word end at _."""
+    return SOLUTIONS.search(re.sub(r"[_.\-]+", " ", text or ""))
 MAX_FILES, MAX_FILE_BYTES, MAX_FILE_CHARS = 3, 10_000_000, 40_000
 
 
@@ -354,15 +373,18 @@ def describe(base_url, token, item_url):
     data, _ = api._request(f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/{kind}/{item_id}")
     markup = (data or {}).get(_TEXT_FIELD[kind]) or ""
     files, seen = [], set()
-    for attrs, endpoint, label in FILE_LINK.findall(markup):
+    for attrs, link_course, file_id, label in FILE_LINK.findall(markup):
         # Never the solutions: this feeds homework help, and he wants hints, not answers.
-        if endpoint in seen or SOLUTIONS.search(attrs + " " + label) or len(files) >= MAX_FILES:
+        if file_id in seen or _solutions(attrs + " " + label) or len(files) >= MAX_FILES:
             continue
-        seen.add(endpoint)
+        seen.add(file_id)
+        # Rebuilt on the Canvas host rather than taken from the link, which
+        # could name any host, and would be sent the token.
+        endpoint = f"{api.base}/api/v1/courses/{link_course}/files/{file_id}"
         try:
-            got = _file_text(api, html.unescape(endpoint))
-        except (CanvasError, urllib.error.URLError, OSError, subprocess.SubprocessError):
+            got = _file_text(api, endpoint)
+        except (CanvasError, OSError, http.client.HTTPException, ValueError, subprocess.SubprocessError):
             got = None
-        if got and got[1].strip() and not SOLUTIONS.search(got[0]):
+        if got and got[1].strip() and not _solutions(got[0]):
             files.append({"name": got[0], "text": got[1]})
     return {"text": html_to_text(markup), "files": files}

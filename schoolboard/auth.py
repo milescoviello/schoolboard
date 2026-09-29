@@ -17,9 +17,10 @@ stdlib only — scrypt for the password, HMAC for the cookie.
 import base64
 import hashlib
 import hmac
-import http.cookies
-import os
+import ipaddress
+import re
 import secrets
+import threading
 import time
 
 COOKIE = "sb_session"
@@ -60,6 +61,10 @@ def valid(token, secret):
         expires, nonce, signature = (token or "").split(".")
     except ValueError:
         return False
+    # compare_digest raises on non-ASCII text, and a cookie is whatever the
+    # client sent: "\351" in one used to 500 the page, traceback and all.
+    if not re.fullmatch(r"[0-9a-f]{64}", signature):
+        return False
     payload = f"{expires}.{nonce}"
     if not hmac.compare_digest(_sign(payload, secret), signature):
         return False
@@ -82,37 +87,61 @@ def clear_header():
 
 
 def read_cookie(header):
-    if not header:
-        return None
-    jar = http.cookies.SimpleCookie()
+    """Ours, found by hand. SimpleCookie drops the whole header when any other
+    cookie on the host is non-standard (a space, a JSON value), which made a
+    valid session look logged out."""
+    for part in (header or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == COOKIE and value:
+            return value.strip('"')
+    return None
+
+
+def client_key(address):
+    """Who a login attempt counts against. IPv6 by /64, since one host is
+    handed the whole block and could otherwise start afresh at every address."""
     try:
-        jar.load(header)
-    except http.cookies.CookieError:
-        return None
-    morsel = jar.get(COOKIE)
-    return morsel.value if morsel else None
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
 
 
 class Throttle:
     """Crude per-process backoff. Enough to make guessing pointless without
-    adding a dependency or a table to maintain."""
+    adding a dependency or a table to maintain.
+
+    An attempt takes its slot before the password is checked, under a lock:
+    checked after, thirty guesses sent at once all got through a limit of six
+    while scrypt ran."""
 
     def __init__(self, limit=6, window=900):
         self.limit = limit
         self.window = window
         self.hits = {}
+        self.lock = threading.Lock()
 
-    def blocked(self, key):
+    def admit(self, key):
+        """Count an attempt and say whether it may go ahead."""
         now = time.time()
-        tries = [t for t in self.hits.get(key, []) if now - t < self.window]
-        self.hits[key] = tries
-        return len(tries) >= self.limit
-
-    def record(self, key):
-        self.hits.setdefault(key, []).append(time.time())
+        with self.lock:
+            tries = [t for t in self.hits.get(key, []) if now - t < self.window]
+            if len(tries) >= self.limit:
+                self.hits[key] = tries
+                return False
+            self.hits[key] = tries + [now]
+            return True
 
     def clear(self, key):
-        self.hits.pop(key, None)
+        with self.lock:
+            self.hits.pop(key, None)
+
+
+def random_password():
+    """Four groups of four from 31 unambiguous characters: about 79 bits. The
+    old four words out of twelve was 20,736 possibilities."""
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4))
 
 
 def ensure_secret(cfg, save):

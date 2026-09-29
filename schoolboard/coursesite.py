@@ -13,10 +13,10 @@ attributes, so the structure is stable enough to read without a HTML library
 (there is none in the stdlib worth using here, and this box has no pip packages).
 """
 import html
+import http.client
 import json
 import re
 import ssl
-import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -74,23 +74,36 @@ def parse_calendar(page, base):
 
 
 def refresh(sites, path=None):
-    """Fetch every configured site into the cache. Returns a short report."""
+    """Fetch every configured site into the cache. Returns (data, a short
+    report, how many sites were fetched and parsed).
+
+    A site that fails, or parses to nothing (moved, redesigned), keeps what the
+    cache already had for it: an empty parse used to wipe 61 good entries."""
     path = Path(path) if path else CACHE
+    old = load(path).get("sites") or {}
     data = {"fetched_at": datetime.now(timezone.utc).isoformat(), "sites": {}}
-    notes = []
+    notes, fetched = [], 0
     for site in sites or []:
         course, url = site.get("course"), site.get("url")
         if not course or not url:
             continue
         try:
             entries = parse_calendar(fetch(url), url)
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            entries, why = None, f"failed ({exc})"
+        else:
+            why = "nothing parsed, keeping the last copy"
+        if entries:
             data["sites"][course] = {"url": url, "entries": entries}
             notes.append(f"{course}: {len(entries)}")
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
-            notes.append(f"{course}: failed ({exc})")
-    if data["sites"]:
+            fetched += 1
+        else:
+            if course in old:
+                data["sites"][course] = old[course]
+            notes.append(f"{course}: {why}")
+    if fetched:
         path.write_text(json.dumps(data, indent=1))
-    return data, ", ".join(notes) or "no course sites configured"
+    return data, ", ".join(notes) or "no course sites configured", fetched
 
 
 def load(path=None):
