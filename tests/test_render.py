@@ -307,6 +307,14 @@ class ShellTest(unittest.TestCase):
         colours = {t for t in light if t not in ("--font", "--r", "--r2", "--pad")}
         self.assertEqual(colours - dark, set())
 
+    def test_an_unbreakable_title_can_still_wrap(self):
+        # One file name or link with no spaces made the page 676px wide on a
+        # 390px phone, which then scrolled sideways or zoomed out.
+        import re
+        body = re.findall(r"(?m)^body\{([^}]*)\}", render.CSS)
+        self.assertTrue(any("overflow-wrap:anywhere" in rule for rule in body))
+        self.assertTrue(any("word-break:break-word" in rule for rule in body))   # Safari before 15.4
+
     def test_the_status_bar_follows_dark_mode_only_when_the_page_does(self):
         now = datetime(2026, 9, 28, 9, 0, tzinfo=LA)
         dark = 'media="(prefers-color-scheme: dark)"'

@@ -59,6 +59,11 @@ body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:16p
    app (viewport-fit=cover). A browser without env() keeps the line above. */
 body{padding:env(safe-area-inset-top) max(var(--pad),env(safe-area-inset-right))
      calc(64px + env(safe-area-inset-bottom)) max(var(--pad),env(safe-area-inset-left))}
+/* Break a run of text that can't fit, wherever it has to. One unbreakable
+   title (a file name, a link in a mail subject) made the page 676px wide, so
+   a phone scrolled sideways, or zoomed out until everything was tiny.
+   word-break:break-word is the older spelling, for Safari before 15.4. */
+body{word-break:break-word;overflow-wrap:anywhere}
 .wrap{max-width:1180px;margin:0 auto}
 a{color:inherit;text-decoration:none}
 button{font:inherit}
