@@ -526,6 +526,15 @@ class Handler(BaseHTTPRequestHandler):
         return urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
 
     def do_POST(self):
+        """Like GET, a failure is answered with a 500. Uncaught, the connection
+        just closed: a locked database mid-sync made an add or a delete look,
+        on the phone, like the network had gone."""
+        try:
+            self._post()
+        except Exception:
+            self._error()
+
+    def _post(self):
         path = self.path.split("?")[0]
         if not self._same_origin():
             self._send("<h1>Cross-site request refused</h1>", status=403)

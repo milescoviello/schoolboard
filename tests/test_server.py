@@ -226,6 +226,16 @@ class TrustedPageTest(ServerTest):
         r, _ = self.post("/add", "title=Call+home&back=mine")
         self.assertEqual(r.getheader("Location"), "/#mine")
 
+    def test_a_failed_post_still_answers(self):
+        # A locked database mid-sync, say. With nothing to catch it the
+        # connection was dropped, and the phone said the network had failed.
+        import sqlite3
+        with mock.patch.object(store, "add_personal", side_effect=sqlite3.OperationalError("database is locked")), \
+                mock.patch("traceback.print_exc"):
+            r, body = self.post("/add", "title=Call+home&back=mine")
+        self.assertEqual(r.status, 500)
+        self.assertIn(b"database is locked", body)
+
     def test_no_sign_out_where_there_is_no_session(self):
         r, body = self.request("GET", "/")
         self.assertNotIn(b'href="/logout"', body)
