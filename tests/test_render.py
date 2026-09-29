@@ -283,6 +283,17 @@ class ShellTest(unittest.TestCase):
         self.assertIn("busy()", head)
         self.assertNotIn("<script>", render.login_page())
 
+    def test_every_colour_is_a_token_the_dark_theme_can_change(self):
+        # The past weeks of the term strip were a literal light grey, and
+        # glared as near-white bars on the dark theme.
+        import re
+        rules = re.sub(r":root\{[^}]*\}", "", render.CSS)
+        self.assertEqual(re.findall(r"#[0-9A-Fa-f]{3,8}\b|rgba?\(", rules), [])
+        light = set(re.findall(r"(--[a-z0-9]+):", render.CSS.split("}", 1)[0]))
+        dark = set(re.findall(r"(--[a-z0-9]+):", render.DARK_CSS))
+        colours = {t for t in light if t not in ("--font", "--r", "--r2", "--pad")}
+        self.assertEqual(colours - dark, set())
+
     def test_the_status_bar_follows_dark_mode_only_when_the_page_does(self):
         now = datetime(2026, 9, 28, 9, 0, tzinfo=LA)
         dark = 'media="(prefers-color-scheme: dark)"'

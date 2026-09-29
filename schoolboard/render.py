@@ -39,7 +39,7 @@ CSS = r"""
 :root{
   --bg:#F3F4F6; --card:#FFFFFF; --sunk:#F8F9FA;
   --ink:#191D24; --ink2:#464F5B; --mut:#8A929E;
-  --line:#E7E9ED; --hair:#F0F1F4;
+  --line:#E7E9ED; --hair:#F0F1F4; --past:#CBD2DA;
   --live:#2C6E63; --live-bg:#E4F0EE;
   --due:#A2621C; --late:#AC3646;
   --c0:#2F62C4; --c0b:#E9EEFB; --c1:#7042B8; --c1b:#F1EAFA;
@@ -267,7 +267,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .term .top b{color:var(--ink);font-size:15px;font-weight:650;letter-spacing:-.01em}
 .tbar{display:flex;gap:2px;height:26px;align-items:flex-end}
 .tw{flex:1;background:var(--hair);border-radius:3px;height:9px;position:relative}
-.tw.p{background:#CBD2DA}
+.tw.p{background:var(--past)}
 .tw.c{background:var(--live);height:20px}
 .tw i{position:absolute;left:0;right:0;bottom:-15px;text-align:center;font-size:9px;
       color:var(--mut);font-style:normal}
@@ -466,7 +466,7 @@ DARK_CSS = r"""
   :root{
     --bg:#101315; --card:#171B1E; --sunk:#1D2225;
     --ink:#E9EDEE; --ink2:#B4BDC1; --mut:#89949A;
-    --line:#262C30; --hair:#1F2528;
+    --line:#262C30; --hair:#1F2528; --past:#3B4448;
     --live:#43C9AE; --live-bg:#16302C;
     --due:#E0A458; --late:#E8737C;
     --c0:#7FAEFF; --c0b:#182234; --c1:#C6A0F0; --c1b:#251C33;
