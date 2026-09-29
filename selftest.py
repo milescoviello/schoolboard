@@ -15,8 +15,11 @@ import re
 import sys
 import traceback
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
-sys.path.insert(0, "/home/miles/schoolboard")
+# This checkout, not a fixed path: from a second checkout (a worktree), the
+# fixed path tested the other one and passed whatever was broken here.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schoolboard import config, render, store, timetable  # noqa: E402
 
 FAIL = []
