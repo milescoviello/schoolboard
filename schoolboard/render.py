@@ -447,6 +447,8 @@ def urgency(due, now):
 
 
 def gap_text(minutes):
+    if minutes < 1:
+        return "starting now"
     if minutes < 60:
         return f"in {minutes} min"
     hours, rest = divmod(minutes, 60)
@@ -506,7 +508,7 @@ def hero(schedule, now, tz, colours, walk_minutes=0):
 </div>"""
     if nxt is not None:
         when = nxt.start.strftime("%-I:%M %p").lower()
-        day_word = "today" if nxt.day == now.date() else nxt.start.strftime("%A")
+        day_word = {0: "today", 1: "tomorrow"}.get((nxt.day - now.date()).days, nxt.start.strftime("%A"))
         leave = ""
         if walk_minutes and nxt.day == now.date():
             depart = nxt.start - timedelta(minutes=walk_minutes)

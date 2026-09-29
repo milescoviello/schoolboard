@@ -235,6 +235,19 @@ class PhoneDayTest(unittest.TestCase):
         self.assertIn('<div class="k">Next up</div>', ordinary)
 
 
+class HeroTest(unittest.TestCase):
+    def test_tomorrow_is_called_tomorrow(self):
+        html = render.hero(SCHEDULE, datetime(2026, 9, 28, 20, 0, tzinfo=LA), LA, render.colour_map(SCHEDULE))
+        self.assertIn("tomorrow at 2:00 pm", html)
+        weekend = render.hero(SCHEDULE, datetime(2026, 10, 3, 10, 0, tzinfo=LA), LA, render.colour_map(SCHEDULE))
+        self.assertIn("Monday at 10:00 am", weekend)
+
+    def test_the_last_minute_is_not_in_0_min(self):
+        html = render.hero(SCHEDULE, datetime(2026, 9, 28, 9, 59, 30, tzinfo=LA), LA, render.colour_map(SCHEDULE))
+        self.assertNotIn("in 0 min", html)
+        self.assertIn("starting now", html)
+
+
 class RowsTest(unittest.TestCase):
     now = datetime(2026, 9, 28, 12, 0, tzinfo=LA)
 
