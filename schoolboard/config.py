@@ -40,6 +40,12 @@ DEFAULTS = {
         {"course": "CS 2000", "url": "https://neu-pdi.github.io/cs2000-public-resources/"},
     ],
     "course_site_refresh_hours": 6,
+    # scribe's lecture export, synced into the vault by Syncthing: deadlines said
+    # in class, and each lecture's recap for the class reminder and the weekly.
+    "scribe_index": "~/Notes/.scribe/index.json",
+    # scribe's phone library (listening copies + pages), pushed here by the laptop
+    # and served at /lectures/. Audio: never in the vault, never public without login.
+    "scribe_pod": "~/scribe-pod",
     # Graph calendar is blocked at the NU tenant (403, and consent is refused),
     # so calendars arrive as published .ics URLs instead. Outlook: Settings >
     # Calendar > Shared calendars > Publish a calendar > ICS link.

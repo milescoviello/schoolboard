@@ -31,7 +31,7 @@ import html
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from . import coursesite, timetable
+from . import coursesite, lectures, timetable
 
 CSS = r"""
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -610,10 +610,13 @@ def _group(due_local, now):
     return due_local.strftime("%A %-d %B")
 
 
-def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10):
+def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10, links=None):
     """Only the near horizon. A month of work in one column is a wall, not a
     list, and it buries everything below it. What is beyond the horizon is
-    counted, not enumerated."""
+    counted, not enumerated.
+
+    `links` are lecture mentions matched to Canvas items (lectures.py): those
+    rows get an "also said in class" tag whose tooltip is what was said."""
     out, heading, beyond = [], None, 0
     cutoff = now + timedelta(days=horizon_days)
     for row in rows[:limit]:
@@ -630,7 +633,14 @@ def render_tasks(rows, now, tz, limit=16, colours=None, horizon_days=10):
             late = " late" if local < now else ""
             out.append(f'<div class="grp{late}">{esc(group)}</div>')
         kind = row["kind"]
-        kind_html = f' <span class="kd">{esc(kind)}</span>' if kind != "assignment" else ""
+        said = lectures.said_in_class(row, links or {})
+        if said:
+            # No JS on this board, so what was said rides in a tooltip.
+            quote = " / ".join(f"{lectures.which(s)} ({s['date']}): {s['what']} (“{s['quote']}”)" for s in said)
+            label = kind if kind == lectures.KIND else "also said in class"
+            kind_html = f' <span class="kd" title="{esc(quote)}">{esc(label)}</span>'
+        else:
+            kind_html = f' <span class="kd">{esc(kind)}</span>' if kind != "assignment" else ""
         title = esc(row["title"])
         if row["url"]:
             title = f'<a href="{esc(row["url"])}">{title}</a>'

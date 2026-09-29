@@ -16,10 +16,10 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import store, timetable
+from . import lectures, store, timetable
 
 TELEGRAM_ENV = Path.home() / "discburn" / "webhook.env"
 
@@ -127,6 +127,45 @@ def effective_send_time(ideal, cfg):
     return min(ideal, window - timedelta(minutes=5))
 
 
+def _title(row, links):
+    """A work item's title, marked when it was said in class (lectures.py)."""
+    title = _esc(row["title"])
+    if row["source"] == lectures.SOURCE:
+        return f"{title} <i>(said in class)</i>"
+    if links.get(row["id"]):
+        return f"{title} <i>(also said in class)</i>"
+    return title
+
+
+RECAP_MAX_AGE_DAYS = 21   # an older "last time" is a stale recap, not a reminder
+
+
+def recap_lines(conn, index, links, meeting, now, tz):
+    """For the class reminder: what the course's last recorded lecture covered,
+    and what's due for this course today."""
+    lines = []
+    lec = lectures.last_before(index, meeting.code, meeting.start.astimezone(timezone.utc))
+    if lec and lectures.lecture_age_days(lec, now) <= RECAP_MAX_AGE_DAYS:
+        day = date.fromisoformat(lec["date"])
+        which = f"{day:%a}" + (f", Lec {lec['lecture']}" if lec.get("lecture") else "")
+        lines.append(f"\nLast time ({which}): {_esc(lec['topic'])}")
+        lines += [f"• {_esc(point)}" for point in lec.get("recap", [])]
+    end_of_day = datetime.combine(meeting.start.date(), datetime.max.time(), tz)
+    due = []
+    for row in store.on_day(conn, now.astimezone(timezone.utc).isoformat(),
+                            end_of_day.astimezone(timezone.utc).isoformat(), include_done=False):
+        when = _parse(row["due_utc"])
+        if row["course"] == meeting.code and when and now < when.astimezone(tz) <= end_of_day:
+            line = f"• {when.astimezone(tz).strftime('%-I:%M %p').lower()} {_title(row, links)}"
+            # What the professor said often says more than the Canvas title: which article.
+            line += "".join(f"\n   ↳ {_esc(s['what'])}" for s in links.get(row["id"], [])[:2])
+            due.append(line)
+    if due:
+        lines.append("\n<b>Due today</b>")
+        lines += due[:4]
+    return lines
+
+
 def build_messages(conn, schedule, cfg, now, tz):
     """Every notification due right now, as (key, text, allow_in_quiet) triples.
 
@@ -140,6 +179,8 @@ def build_messages(conn, schedule, cfg, now, tz):
     """
     nc = cfg.get("notify", {})
     out = []
+    index = lectures.load(cfg)
+    links = store.get_meta(conn, lectures.LINKS_META) or {}
 
     # 1. A class is about to start. The most useful one on this board, because
     #    four courses render deadlines in the wrong timezone anyway.
@@ -148,10 +189,14 @@ def build_messages(conn, schedule, cfg, now, tz):
         minutes = meeting.minutes_until(now)
         if 0 < minutes <= lead:
             course = meeting.course
+            # The recap rides on this reminder rather than being a message of
+            # its own: PHIL mornings already get the digest, this and a leave-by
+            # push within 35 minutes.
             out.append((
                 f"class:{course['code']}:{now.date().isoformat()}",
                 f"<b>{_esc(course['code'])}</b> in {minutes} min\n"
-                f"{_esc(course['room'])} · {meeting.start.strftime('%-I:%M %p').lower()}",
+                f"{_esc(course['room'])} · {meeting.start.strftime('%-I:%M %p').lower()}"
+                + "".join("\n" + line for line in recap_lines(conn, index, links, meeting, now, tz)),
                 False,
             ))
 
@@ -175,7 +220,7 @@ def build_messages(conn, schedule, cfg, now, tz):
                 out.append((
                     f"due:{row['id']}:{label}",
                     f"<b>Due {_fmt_due(local, now)}</b>\n"
-                    f"{_esc(row['title'])}\n{_esc(row['course'])}",
+                    f"{_title(row, links)}\n{_esc(row['course'])}",
                     not in_quiet_hours(cfg, send_at),
                 ))
                 break
@@ -196,19 +241,21 @@ def build_messages(conn, schedule, cfg, now, tz):
     week_hour = nc.get("weekly_hour")
     if week_hour is not None and now.weekday() == 6 and now.hour >= int(week_hour):
         out.append((f"weekly:{now.date().isoformat()}",
-                    weekly_text(conn, schedule, now, tz), False))
+                    weekly_text(conn, schedule, now, tz, index, links), False))
 
     # 5. A morning digest, once a day.
     digest_hour = nc.get("digest_hour")
     if digest_hour is not None and now.hour >= int(digest_hour):
         out.append((f"digest:{now.date().isoformat()}",
-                    digest_text(conn, schedule, now, tz), False))
+                    digest_text(conn, schedule, now, tz, links), False))
 
     return out
 
 
-def weekly_text(conn, schedule, now, tz):
-    """Sunday evening: the shape of the week that starts tomorrow."""
+def weekly_text(conn, schedule, now, tz, index=None, links=None):
+    """Sunday evening: the shape of the week that starts tomorrow, what's due,
+    and what each course covered in the week just gone (from scribe)."""
+    links = links or {}
     monday = now.date() + timedelta(days=1)
     lines = [f"<b>Week of {monday.strftime('%-d %B')}</b>"]
     for offset in range(5):
@@ -230,15 +277,26 @@ def weekly_text(conn, schedule, now, tz):
             continue
         local = when.astimezone(tz)
         if now < local <= horizon:
-            due.append(f"  {local.strftime('%a')} &mdash; {_esc(row['title'])}")
+            due.append(f"  {local.strftime('%a')} &mdash; {_title(row, links)}")
     if due:
         lines.append("")
         lines.append(f"<b>{len(due)} due this week</b>")
         lines.extend(due[:10])
+    past = lectures.between(index, (now - timedelta(days=7)).astimezone(timezone.utc),
+                            now.astimezone(timezone.utc))
+    if past:
+        lines.append("")
+        lines.append("<b>Last week in class</b>")
+        for lec in past:
+            day = date.fromisoformat(lec["date"])
+            which = f" Lec {lec['lecture']}" if lec.get("lecture") else ""
+            lines.append(f"  {day:%a} {_esc(lec['course'])}{which} &mdash; "
+                         f"{_esc(lec.get('topic') or 'recorded, no notes yet')}")
     return "\n".join(lines)
 
 
-def digest_text(conn, schedule, now, tz):
+def digest_text(conn, schedule, now, tz, links=None):
+    links = links or {}
     lines = [f"<b>{now.strftime('%A %B %-d')}</b>"]
     reason = timetable.no_class_reason(schedule, now.date())
     meetings = timetable.meetings_on(schedule, now.date(), tz)
@@ -257,7 +315,7 @@ def digest_text(conn, schedule, now, tz):
             continue
         local = due.astimezone(tz)
         if 0 < _hours(local - now) <= 48:
-            soon.append(f"  {_fmt_due(local, now)} — {_esc(row['title'])} ({_esc(row['course'])})")
+            soon.append(f"  {_fmt_due(local, now)} — {_title(row, links)} ({_esc(row['course'])})")
     if soon:
         lines.append("")
         lines.append("<b>Due in the next 48h</b>")

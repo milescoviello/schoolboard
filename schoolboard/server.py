@@ -6,6 +6,7 @@ on screen with an honest "last synced" line in the footer.
 """
 import fcntl
 import json
+import re
 import socket
 import struct
 import subprocess
@@ -15,8 +16,9 @@ import urllib.parse
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-from . import auth, canvas, config, coursesite, ics, mail, notify, render, status, store, timetable
+from . import auth, canvas, config, coursesite, ics, lectures, mail, notify, render, status, store, timetable
 
 
 def sync_once(cfg=None, schedule=None):
@@ -56,6 +58,10 @@ def sync_once(cfg=None, schedule=None):
             store.set_meta(conn, "mail_generated_at", mail_report.get("generated_at"))
         else:
             parts.append("mail: no drop file yet")
+
+        # After Canvas, so a deadline said in class can be matched to its Canvas item.
+        parts.append(lectures.collect(conn, cfg, timetable.tzinfo(cfg["timezone"]))
+                     or "lectures: no scribe export yet")
 
         if cfg.get("ics_feeds"):
             ics_items, ics_note = ics.collect(cfg["ics_feeds"])
@@ -105,7 +111,8 @@ def build_page(week=None, focus_day=None):
     try:
         colours = render.colour_map(schedule)
         tasks = render.render_tasks(store.upcoming(conn), now, tz, colours=colours,
-                                    horizon_days=cfg.get("due_soon_days", 10))
+                                    horizon_days=cfg.get("due_soon_days", 10),
+                                    links=store.get_meta(conn, lectures.LINKS_META) or {})
         anns = render.render_announcements(store.announcements(conn), now, tz)
         mails = render.render_mail(store.mail(conn), now, tz, colours=colours)
         grades = render.render_grades(store.get_meta(conn, "grades") or [], colours=colours)
@@ -128,6 +135,104 @@ def build_page(week=None, focus_day=None):
                        refresh=cfg["refresh_seconds"])
 
 
+def next_meeting(cfg=None, schedule=None, now=None):
+    """The next meeting to walk to, as data rather than HTML.
+
+    Polled by dormbot on .148 for its leave-by nudge. It reuses the board's own
+    timetable logic and `walk_minutes`, so the nudge and the page's "Leave by"
+    line can never disagree. `leave_by` is given for later days too; deciding
+    whether a meeting is today is the caller's job.
+    """
+    cfg = cfg or config.load_config()
+    schedule = schedule or config.load_schedule()
+    tz = timetable.tzinfo(cfg["timezone"])
+    now = now or datetime.now(tz)
+    _, nxt = timetable.current_and_next(schedule, now, tz)
+    walk = int(cfg.get("walk_minutes") or 0)
+    body = {"now": now.isoformat(timespec="seconds"), "next": None,
+            "walk_minutes": walk, "leave_by": None}
+    if nxt:
+        course = nxt.course
+        body["next"] = {"code": course["code"], "title": course.get("title", ""),
+                        "room": course.get("room", ""),
+                        "start": nxt.start.isoformat(), "end": nxt.end.isoformat()}
+        if walk:
+            body["leave_by"] = (nxt.start - timedelta(minutes=walk)).isoformat()
+    return body
+
+
+def due_items(cfg=None, now=None):
+    """The "Due soon" column as data rather than HTML.
+
+    Polled by dormbot on .148 to answer "hermes, what's due". Same rows and the
+    same horizon as render.render_tasks (store.upcoming + cfg["due_soon_days"]),
+    so the voice answer and the page can never disagree. Times are in the
+    config timezone, never the host's.
+    """
+    cfg = cfg or config.load_config()
+    tz = timetable.tzinfo(cfg["timezone"])
+    now = now or datetime.now(tz)
+    horizon = int(cfg.get("due_soon_days", 10))
+    cutoff = now + timedelta(days=horizon)
+    items = []
+    conn = store.connect()
+    try:
+        for row in store.upcoming(conn):
+            due = render.parse_utc(row["due_utc"])
+            if due is None:
+                continue
+            local = due.astimezone(tz)
+            if local > cutoff:
+                continue
+            items.append({"course": row["course"] or "", "title": row["title"] or "",
+                          "kind": row["kind"] or "", "due": local.isoformat(),
+                          "overdue": local < now, "url": row["url"] or ""})
+    finally:
+        conn.close()
+    return {"now": now.isoformat(timespec="seconds"), "horizon_days": horizon, "items": items}
+
+
+DESCRIPTION_CACHE_HOURS = 6
+
+
+def work_items(course=None, days=14, cfg=None, now=None):
+    """Upcoming Canvas work with its full text, for scribe's homework ↔ lecture
+    links (scribe runs on the laptop, which doesn't hold the Canvas token).
+    Descriptions are fetched from Canvas on demand and cached in meta for a few
+    hours, so asking again doesn't hit Canvas."""
+    cfg = cfg or config.load_config()
+    tz = timetable.tzinfo(cfg["timezone"])
+    now = now or datetime.now(tz)
+    start, end = now - timedelta(days=3), now + timedelta(days=days)
+    token = cfg["canvas"]["token"]
+    items = []
+    conn = store.connect()
+    try:
+        for row in store.upcoming(conn, limit=80):
+            due = render.parse_utc(row["due_utc"])
+            if (due is None or not str(row["id"]).startswith("canvas:") or (course and row["course"] != course)
+                    or not start <= due.astimezone(tz) <= end):
+                continue
+            key = f"desc:{row['id']}"
+            cached = store.get_meta(conn, key)
+            fresh = cached and "got" in cached and (datetime.now(timezone.utc) - datetime.fromisoformat(cached["at"])
+                                < timedelta(hours=DESCRIPTION_CACHE_HOURS))
+            got = cached.get("got") if cached else None
+            if not fresh and token:
+                try:
+                    got = canvas.describe(cfg["canvas"]["base_url"], token, row["url"])
+                    store.set_meta(conn, key, {"at": datetime.now(timezone.utc).isoformat(), "got": got})
+                except (canvas.CanvasError, OSError, ValueError):
+                    pass  # keep the cached text, if any; a read timeout is an OSError, not a CanvasError
+            got = got or {"text": "", "files": []}
+            items.append({"id": row["id"], "course": row["course"] or "", "title": row["title"] or "",
+                          "kind": row["kind"] or "", "due": due.astimezone(tz).isoformat(),
+                          "url": row["url"] or "", "description": got["text"], "files": got["files"]})
+    finally:
+        conn.close()
+    return {"now": now.isoformat(timespec="seconds"), "items": items}
+
+
 THROTTLE = auth.Throttle()
 
 
@@ -148,6 +253,72 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)
+
+    # --- scribe's lecture library ------------------------------------------
+    LIBRARY_TYPES = {".html": "text/html; charset=utf-8", ".m4a": "audio/mp4",
+                     ".xml": "application/rss+xml; charset=utf-8", ".json": "application/json"}
+
+    def _library(self, path, head=False):
+        """scribe's phone library (copied to ~/scribe-pod by `scribe process` on the
+        laptop): static files, with byte ranges, which Safari needs to play and
+        seek audio. Same gate as every other page: open on the trusted
+        listener, login on the public one."""
+        root = Path(config.load_config().get("scribe_pod") or "~/scribe-pod").expanduser().resolve()
+        name = urllib.parse.unquote(path[len("/lectures/"):]) or "index.html"
+        try:
+            target = (root / name).resolve()
+        except (OSError, ValueError):  # "%00" in the path
+            target = root
+        ctype = self.LIBRARY_TYPES.get(target.suffix)
+        if root not in target.parents or not ctype or not target.is_file():
+            self._send("<h1>404</h1>", status=404)
+            return
+        size = target.stat().st_size
+        start, end, status = 0, size - 1, 200
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+        if m and (m[1] or m[2]):
+            if m[1]:
+                start, end = int(m[1]), min(int(m[2]), size - 1) if m[2] else size - 1
+            else:  # the last N bytes
+                start, end = max(size - int(m[2]), 0), size - 1
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            status = 206
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", "no-cache" if ctype.startswith(("text/", "application/rss")) else "max-age=3600")
+        self.end_headers()
+        if head:
+            return
+        with open(target, "rb") as f:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(1 << 16, left))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return  # the player moved on (seeking closes connections all the time)
+                left -= len(chunk)
+
+    def do_HEAD(self):
+        path = self.path.split("?")[0]
+        if not self._authed():
+            self._to_login()
+        elif path.startswith("/lectures/"):
+            self._library(path, head=True)
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     # --- auth helpers ----------------------------------------------------
     def _secret(self):
@@ -283,6 +454,20 @@ class Handler(BaseHTTPRequestHandler):
                 elif focus:
                     week = focus - timedelta(days=focus.weekday())
                 self._send(build_page(week=week, focus_day=focus))
+            elif path == "/next.json":
+                self._send(json.dumps(next_meeting()), ctype="application/json")
+            elif path == "/due.json":
+                self._send(json.dumps(due_items()), ctype="application/json")
+            elif path == "/work.json":
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                course = (query.get("course") or [None])[0]
+                days = (query.get("days") or ["14"])[0]
+                days = int(days) if days.isdigit() else 14
+                self._send(json.dumps(work_items(course, min(max(days, 1), 60))), ctype="application/json")
+            elif path == "/lectures":
+                self._redirect("/lectures/")
+            elif path.startswith("/lectures/"):
+                self._library(path)
             elif path == "/sync":
                 self._send(f"<pre>{sync_once()}</pre><p><a href='/'>back</a></p>")
             elif path == "/manifest.webmanifest":

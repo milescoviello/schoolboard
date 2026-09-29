@@ -10,6 +10,7 @@ The lesson is that a page which changes with the clock has to be tested against
 a clock that moves. This sweeps the day rather than trusting whatever time it
 happens to be when someone runs it.
 """
+import json
 import sys
 import traceback
 from datetime import date, datetime, timedelta
@@ -30,6 +31,51 @@ def check(label, fn):
         FAIL.append((label, f"suspiciously small page: {len(html)} bytes"))
     if "Traceback" in html:
         FAIL.append((label, "traceback rendered into the page"))
+
+
+def check_json(label, fn):
+    """/next.json is read by a program (dormbot on .148), so check its shape."""
+    try:
+        body = fn()
+        json.dumps(body)
+        assert set(body) == {"now", "next", "walk_minutes", "leave_by"}, sorted(body)
+        assert isinstance(body["walk_minutes"], int)
+        nxt = body["next"]
+        if nxt is None:
+            assert body["leave_by"] is None, "leave_by without a meeting"
+            return
+        assert set(nxt) == {"code", "title", "room", "start", "end"}, sorted(nxt)
+        start = datetime.fromisoformat(nxt["start"])
+        assert start.utcoffset() is not None, "naive start time"
+        if body["walk_minutes"]:
+            leave = datetime.fromisoformat(body["leave_by"])
+            assert leave == start - timedelta(minutes=body["walk_minutes"]), "leave_by drift"
+        else:
+            assert body["leave_by"] is None, "leave_by with walk_minutes 0"
+    except Exception:
+        FAIL.append((label, traceback.format_exc().strip().splitlines()[-1]))
+
+
+def check_due(label, fn):
+    """/due.json is read by dormbot too; its shape is a contract."""
+    try:
+        body = fn()
+        json.dumps(body)
+        assert set(body) == {"now", "horizon_days", "items"}, sorted(body)
+        assert isinstance(body["horizon_days"], int)
+        now = datetime.fromisoformat(body["now"])
+        assert now.utcoffset() is not None, "naive now"
+        dues = []
+        for it in body["items"]:
+            assert set(it) == {"course", "title", "kind", "due", "overdue", "url"}, sorted(it)
+            due = datetime.fromisoformat(it["due"])
+            assert due.utcoffset() is not None, "naive due"
+            assert it["overdue"] == (due < now), "overdue flag wrong"
+            assert due <= now + timedelta(days=body["horizon_days"]), "beyond the horizon"
+            dues.append(due)
+        assert dues == sorted(dues), "not sorted by due"
+    except Exception:
+        FAIL.append((label, traceback.format_exc().strip().splitlines()[-1]))
 
 
 def main():
@@ -77,13 +123,23 @@ def main():
                           schedule, n, tz, tasks, "", "t", True, workload=workload,
                           personal=personal, sources=sources, walk_minutes=w, theme=t))
 
+    # The JSON dormbot polls for its leave-by nudge, across the same days.
+    from schoolboard import server  # noqa: E402
+    for day in days:
+        for hour in (7, 13, 23):
+            now = datetime(day.year, day.month, day.day, hour, 30, tzinfo=tz)
+            check_json(f"next.json {day} {hour:02d}:30",
+                       lambda n=now: server.next_meeting(now=n))
+            check_due(f"due.json {day} {hour:02d}:30",
+                      lambda n=now: server.due_items(now=n))
+
     # Empty data, which is what a fresh install looks like.
     check("no data", lambda: render.page(schedule, datetime.now(tz), tz, "", "", "t", False))
     check("login", lambda: render.login_page())
     check("login error", lambda: render.login_page(error="nope"))
     check("login throttled", lambda: render.login_page(retry_after=900))
 
-    total = 7 * 24 + 6 + (2 * 2 * 4) + 4
+    total = 7 * 24 + 6 + (2 * 2 * 4) + 7 * 3 * 2 + 4
     if FAIL:
         print(f"FAILED {len(FAIL)} of {total}")
         for label, why in FAIL[:12]:

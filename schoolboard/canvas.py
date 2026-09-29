@@ -8,9 +8,12 @@ token is not.
 stdlib only — no requests. This runs on a 2009 Core2Duo with no pip packages,
 and every dependency avoided is a wheel that can't fail to build.
 """
+import html
 import json
 import re
+import shutil
 import ssl
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -297,3 +300,69 @@ def collect(base_url, token, schedule):
     return items, {"courses": len(courses), "planner": len(planner),
                    "items": len(items), "notes": notes,
                    "grades": grades(courses, labels)}
+
+
+# ---- one item's full text, for scribe's homework ↔ lecture links -------------------------
+
+_ITEM_URL = re.compile(r"/courses/(\d+)/(assignments|discussion_topics|quizzes)/(\d+)")
+_TEXT_FIELD = {"assignments": "description", "discussion_topics": "message", "quizzes": "description"}
+
+
+def html_to_text(markup):
+    """Canvas descriptions are HTML; keep the paragraph and list breaks."""
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>|</div>|</tr>", "\n", markup or "")
+    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+FILE_LINK = re.compile(r'<a\b([^>]*data-api-endpoint="([^"]+/api/v1/courses/\d+/files/\d+)"[^>]*)>(.*?)</a>',
+                       re.S | re.I)
+SOLUTIONS = re.compile(r"solution|\bhws\d|answer key|\bkey\b", re.I)
+MAX_FILES, MAX_FILE_BYTES, MAX_FILE_CHARS = 3, 10_000_000, 40_000
+
+
+def _file_text(api, endpoint):
+    """(name, text) of a linked Canvas file: PDFs through pdftotext, plain text
+    as is. None for anything else, or anything too big."""
+    meta, _ = api._request(endpoint)
+    ctype, size = (meta.get("content-type") or ""), int(meta.get("size") or 0)
+    if not meta.get("url") or size > MAX_FILE_BYTES:
+        return None
+    req = urllib.request.Request(meta["url"], headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=api.ctx) as resp:
+        data = resp.read(MAX_FILE_BYTES + 1)
+    name = meta.get("display_name") or meta.get("filename") or "file"
+    if ctype.startswith("text/"):
+        return name, data.decode("utf-8", "replace")[:MAX_FILE_CHARS]
+    if ctype == "application/pdf" and shutil.which("pdftotext"):
+        out = subprocess.run(["pdftotext", "-layout", "-q", "-", "-"], input=data, capture_output=True, timeout=60)
+        return name, out.stdout.decode("utf-8", "replace")[:MAX_FILE_CHARS]
+    return None
+
+
+def describe(base_url, token, item_url):
+    """{"text", "files": [{"name", "text"}]} for the assignment, discussion or
+    quiz at `item_url`. Homework often lives in a linked PDF (CS 1800's
+    description is only the link), so up to MAX_FILES linked files are read too."""
+    m = _ITEM_URL.search(item_url or "")
+    if not m:
+        return {"text": "", "files": []}
+    course_id, kind, item_id = m.groups()
+    api = Canvas(base_url, token)
+    data, _ = api._request(f"{base_url.rstrip('/')}/api/v1/courses/{course_id}/{kind}/{item_id}")
+    markup = (data or {}).get(_TEXT_FIELD[kind]) or ""
+    files, seen = [], set()
+    for attrs, endpoint, label in FILE_LINK.findall(markup):
+        # Never the solutions: this feeds homework help, and he wants hints, not answers.
+        if endpoint in seen or SOLUTIONS.search(attrs + " " + label) or len(files) >= MAX_FILES:
+            continue
+        seen.add(endpoint)
+        try:
+            got = _file_text(api, html.unescape(endpoint))
+        except (CanvasError, urllib.error.URLError, OSError, subprocess.SubprocessError):
+            got = None
+        if got and got[1].strip() and not SOLUTIONS.search(got[0]):
+            files.append({"name": got[0], "text": got[1]})
+    return {"text": html_to_text(markup), "files": files}
