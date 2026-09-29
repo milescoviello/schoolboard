@@ -1052,16 +1052,37 @@ ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0
         "%3Ccircle cx='16' cy='16' r='6' fill='%235FB3A1'/%3E%3C/svg%3E")
 
 
+# The page reloads itself every `refresh` seconds, but not while he is typing:
+# a plain meta refresh wiped a half-typed "Add something" and put the phone's
+# keyboard away mid-word. It also reloads at once when the page comes back into
+# view after long enough away, so the phone never opens on an hour-old board.
+# A day or week he browsed to (?day=, ?week=) goes back to the board's own
+# view after ten minutes instead: reloaded as is, the phone's home-screen app,
+# which reopens on its last page, kept showing a Thursday tapped days before.
+# Without script, the meta refresh in <noscript> still does the job.
+RELOAD_JS = """<script>(function(){var every=%d*1000,t0=Date.now(),away=location.search?600000:0;
+function busy(){var a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return true;
+var f=document.querySelectorAll('input[type=text],input[type=date],input[type=password]');
+for(var i=0;i<f.length;i++)if(f[i].value)return true;return false}
+function tick(){var gone=Date.now()-t0;if(document.hidden||busy())return;
+if(away){if(gone>=away)location.replace('/')}else if(gone>=every)location.reload()}
+setInterval(tick,5000);document.addEventListener('visibilitychange',tick)})();</script>"""
+
+
 def _shell(title, inner, refresh=None, theme="light"):
-    meta = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
+    meta = (f'<noscript><meta http-equiv="refresh" content="{int(refresh)}"></noscript>'
+            + RELOAD_JS % int(refresh)) if refresh else ""
     extra_css = DARK_CSS if theme == "auto" else ""
     scheme = "light dark" if theme == "auto" else "light"
+    # The phone's status bar follows the page into dark mode too.
+    dark_bar = ('<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#101315">'
+                if theme == "auto" else "")
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="{scheme}">
-<meta name="theme-color" content="#F3F4F6">
+{dark_bar}<meta name="theme-color" content="#F3F4F6">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">

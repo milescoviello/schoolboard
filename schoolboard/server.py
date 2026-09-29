@@ -624,7 +624,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({
                     "name": "schoolboard", "short_name": "school",
                     "start_url": "/", "display": "standalone",
-                    "background_color": "#16182A", "theme_color": "#16182A",
+                    # The page's own ground, so the home-screen app doesn't
+                    # open on a navy splash before a light page.
+                    "background_color": "#F3F4F6", "theme_color": "#F3F4F6",
                     "icons": [{"src": render.ICON, "sizes": "any", "type": "image/svg+xml"}],
                 }), ctype="application/manifest+json")
                 return

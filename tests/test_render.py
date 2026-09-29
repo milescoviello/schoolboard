@@ -272,5 +272,23 @@ class RowsTest(unittest.TestCase):
         self.assertIn('<span><span class="at">tomorrow 3:30 pm</span> &middot; Outlook &middot; Room 2</span>', html)
 
 
+class ShellTest(unittest.TestCase):
+    def test_the_refresh_waits_for_typing(self):
+        html = render.page(SCHEDULE, datetime(2026, 9, 28, 9, 0, tzinfo=LA), LA, "", "", "t", True, refresh=45)
+        head = html.split("</head>", 1)[0]
+        # The only meta refresh is the no-script fallback.
+        self.assertEqual(head.count('http-equiv="refresh"'), 1)
+        self.assertIn('<noscript><meta http-equiv="refresh" content="45"></noscript>', head)
+        self.assertIn("var every=45*1000", head)
+        self.assertIn("busy()", head)
+        self.assertNotIn("<script>", render.login_page())
+
+    def test_the_status_bar_follows_dark_mode_only_when_the_page_does(self):
+        now = datetime(2026, 9, 28, 9, 0, tzinfo=LA)
+        dark = 'media="(prefers-color-scheme: dark)"'
+        self.assertIn(dark, render.page(SCHEDULE, now, LA, "", "", "t", True, theme="auto"))
+        self.assertNotIn(dark, render.page(SCHEDULE, now, LA, "", "", "t", True))
+
+
 if __name__ == "__main__":
     unittest.main()
