@@ -215,6 +215,19 @@ def _sync_note(conn, cfg):
     return f"synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
 
 
+def _meals_card(settings, now, meal):
+    """The dining card, or nothing. The menu is someone else's data and the
+    least of what the board is for: a cache it can't read loses the card, not
+    the page."""
+    if not settings.get("location_id"):
+        return ""
+    try:
+        return render.render_meals(dining.load(), now, settings, want=meal)
+    except Exception:
+        traceback.print_exc()
+        return ""
+
+
 def build_page(week=None, focus_day=None, public=False, meal=None):
     cfg = config.load_config()
     schedule = config.load_schedule()
@@ -237,8 +250,7 @@ def build_page(week=None, focus_day=None, public=False, meal=None):
         personal = render.render_personal(store.personal(conn), now, tz)
         sources = render.render_sources(status.sources(cfg, conn, store.get_meta))
         note = _sync_note(conn, cfg)
-        eating = cfg.get("dining") or {}
-        meals = render.render_meals(dining.load(), now, eating, want=meal) if eating.get("location_id") else ""
+        meals = _meals_card(cfg.get("dining") or {}, now, meal)
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,

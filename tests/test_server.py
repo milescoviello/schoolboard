@@ -235,6 +235,16 @@ class TrustedPageTest(ServerTest):
             self.assertIn(b'id="meals"', body)
             self.assertNotIn(b"<script>x", body)
 
+    def test_a_mangled_menu_loses_the_card_not_the_page(self):
+        today = datetime.now(server.timetable.tzinfo("America/Los_Angeles")).date()
+        cache = Path(self.tmp.name) / "dining.json"
+        cache.write_text(json.dumps({"days": {today.isoformat(): {"hours": [[7]], "meals": [
+            {"name": "Lunch", "slug": "lunch", "stations": [{"name": "Grill", "items": [{"name": "Soup"}]}]}]}}}))
+        with mock.patch.object(dining, "CACHE", cache), mock.patch("traceback.print_exc"):
+            r, body = self.request("GET", "/")
+        self.assertEqual(r.status, 200)
+        self.assertNotIn(b'id="meals"', body)
+
     def test_a_dated_add_comes_back_to_due(self):
         r, _ = self.post("/add", "title=Return+book&due=2026-10-01&back=mine")
         self.assertEqual(r.getheader("Location"), "/#due")
