@@ -29,9 +29,10 @@ Every time is computed in campus time, never the host clock, which is wrong.
 """
 import html
 import re
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
-from . import coursesite, lectures, timetable
+from . import coursesite, dining, lectures, timetable
 from .ics import ALL_DAY_TIME
 
 CSS = r"""
@@ -263,6 +264,18 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--live);outline-offse
 .chg .r{padding:3px 0;font-size:14px;color:var(--ink2)}
 .chg .tg{color:var(--live);font-weight:650;margin-right:8px;font-size:13px}
 .chg .tg.mv{color:var(--due)}
+
+/* --- dining --- */
+.mn{margin:-4px 0 4px;flex-wrap:wrap}
+.st{padding:10px 0;border-bottom:1px solid var(--hair)}
+.st:last-child{border-bottom:0}
+.st .sn{font-size:13px;font-weight:600;color:var(--mut)}
+.st .sd{font-size:15px;line-height:1.45;margin-top:2px}
+.st .x{color:var(--mut)}
+.mk{font-style:normal;font-size:11px;font-weight:650;color:var(--mut);margin-left:4px}
+.mf .mk{margin:0}
+.mf + .mf{padding-top:4px}
+.mf a{border-bottom:1px solid currentColor}
 
 /* --- term progress --- */
 .term{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
@@ -960,6 +973,78 @@ def render_completed(rows, now, tz, limit=8, colours=None, pending=None):
     return "".join(out)
 
 
+MEAL_DISHES = 6
+
+
+def hall_hours(spans, day, now):
+    """"open until 8:30 pm", or when it next opens. The hall's own hours, the
+    only times the API has: which meal is on is the board's guess."""
+    def clock(moment):
+        return moment.strftime("%-I:%M %p").lower()
+    for start, end in spans or []:
+        if day != now.date():
+            return f"opens {clock(start)}"
+        if start <= now < end:
+            return f"open until {clock(end)}"
+        if now < start:
+            return f"opens {clock(start)}"
+    return ""
+
+
+def render_meals(data, now, settings=None, want=None):
+    """The dining hall's meal: the one on now, or the next, with the day's
+    other meals a tap away.
+
+    Only the stations that differ from other days are spelled out. The rest
+    (the salad bar, the pizza, the yogurt) are the same every day, and listed
+    in full they were most of a long card."""
+    settings = settings or {}
+    if not (data or {}).get("days"):
+        return ""
+    hall = settings.get("name") or "the dining hall"
+    pick = dining.current(data, now, settings, want)
+    if pick is None:
+        return card("Dining", f'<div class="empty">No menu from {esc(hall)} for the days ahead yet.</div>',
+                    ident="meals")
+    day, meal = pick["day"], pick["meal"]
+    ahead = (day - now.date()).days
+    heading = esc(meal["name"]) + {0: "", 1: " tomorrow"}.get(ahead, f" {day.strftime('%A')}")
+    tabs = ""
+    if len(pick["meals"]) > 1:
+        tabs = '<div class="nav mn">' + "".join(
+            f'<a href="/?meal={urllib.parse.quote(m["slug"])}#meals" class="{"on" if m is meal else ""}">'
+            f'{esc(m["name"])}</a>' for m in pick["meals"]) + '</div>'
+    marks = settings.get("marks") or {}
+    usual = dining.usual(data, day, meal)
+    # The dot is held to the dish before it: free to wrap, it began a line.
+    used, rows, between = set(), [], '&nbsp;<span class="x">&middot;</span> '
+    for station in meal["stations"]:
+        if station["name"] in usual:
+            continue
+        dishes = []
+        for item in station["items"][:MEAL_DISHES]:
+            text = esc(item["name"])
+            tag = next((t for t in marks if marks[t] and t in item["tags"]), None)
+            if tag:
+                used.add(marks[tag])
+                text += f'<i class="mk" title="{esc(tag)}">{esc(marks[tag])}</i>'
+            dishes.append(text)
+        if len(station["items"]) > MEAL_DISHES:
+            dishes.append(f'<span class="x">{len(station["items"]) - MEAL_DISHES} more</span>')
+        rows.append(f'<div class="st"><div class="sn">{esc(station["name"])}</div>'
+                    f'<div class="sd">{between.join(dishes)}</div></div>')
+    notes = []
+    if usual:
+        notes.append("As usual: " + ", ".join(esc(s["name"]) for s in meal["stations"] if s["name"] in usual))
+    legend = " &middot; ".join(f'<i class="mk">{esc(marks[tag])}</i> {esc(tag.lower())}'
+                               for tag in marks if marks[tag] in used)
+    tail = " &middot; ".join(part for part in (legend, link(f"{esc(hall)} menu", settings.get("url"))) if part)
+    notes.append(tail)
+    foot = "".join(f'<div class="more mf">{note}</div>' for note in notes if note)
+    return card(heading, f'{tabs}<div class="sts">{"".join(rows)}</div>{foot}',
+                sub=esc(hall_hours(pick["spans"], day, now)), ident="meals")
+
+
 def render_announcements(rows, now, tz, limit=4):
     out = []
     for row in rows[:limit]:
@@ -1132,7 +1217,8 @@ def card(heading, content, sub="", extra="", cls="", ident=""):
 
 def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, mails="",
          grades="", changed="", appts="", week=None, workload=None, completed="",
-         focus_day=None, personal="", sources="", walk_minutes=0, theme="light", sign_out=False):
+         focus_day=None, personal="", sources="", walk_minutes=0, theme="light", sign_out=False,
+         meals=""):
     """`sign_out` on the public listener, the only one with a session to end."""
     colours = colour_map(schedule)
     workload = workload or {}
@@ -1164,6 +1250,7 @@ def page(schedule, now, tz, tasks, anns, sync_note, canvas_ready, refresh=60, ma
 
     side = "".join([
         card("Exams", render_exams(schedule, now, tz)),
+        meals,
         card("Calendar", appts),
         card("Course mail", mails),
         card("Announcements", anns),

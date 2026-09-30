@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from schoolboard import auth, config, server, store  # noqa: E402
+from schoolboard import auth, config, dining, server, store  # noqa: E402
 
 PASSWORD = "correct horse"
 HASH = auth.hash_password(PASSWORD)
@@ -219,6 +219,21 @@ class TrustedPageTest(ServerTest):
         for odd in ("https://evil.example", "//evil.example", "due%0d%0aX-Evil:1", ""):
             r, _ = self.post("/done", f"id={item}&back={odd}")
             self.assertEqual(r.getheader("Location"), "/", odd)
+
+    def test_a_tapped_meal_is_the_one_shown(self):
+        today = datetime.now(server.timetable.tzinfo("America/Los_Angeles")).date()
+        cache = Path(self.tmp.name) / "dining.json"
+        cache.write_text(json.dumps({"fetched_at": "2026-09-29T12:00:00+00:00", "days": {today.isoformat(): {
+            "hours": [[0, 1440]], "meals": [
+                {"name": name, "slug": name.lower(), "stations": [{"name": "Grill", "items": [
+                    {"name": f"{name} dish", "tags": []}]}]} for name in ("Breakfast", "Lunch", "Dinner")]}}}))
+        with mock.patch.object(dining, "CACHE", cache):
+            _, body = self.request("GET", "/?meal=dinner")
+            self.assertIn(b'class="on">Dinner</a>', body)
+            self.assertIn(b"Dinner dish", body)
+            _, body = self.request("GET", "/?meal=%3Cscript%3E" + "x" * 500)
+            self.assertIn(b'id="meals"', body)
+            self.assertNotIn(b"<script>x", body)
 
     def test_a_dated_add_comes_back_to_due(self):
         r, _ = self.post("/add", "title=Return+book&due=2026-10-01&back=mine")

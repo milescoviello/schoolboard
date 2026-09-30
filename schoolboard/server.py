@@ -215,7 +215,7 @@ def _sync_note(conn, cfg):
     return f"synced {ago} · {store.get_meta(conn, 'last_sync_note') or ''}".strip(" ·")
 
 
-def build_page(week=None, focus_day=None, public=False):
+def build_page(week=None, focus_day=None, public=False, meal=None):
     cfg = config.load_config()
     schedule = config.load_schedule()
     tz = timetable.tzinfo(cfg["timezone"])
@@ -237,12 +237,14 @@ def build_page(week=None, focus_day=None, public=False):
         personal = render.render_personal(store.personal(conn), now, tz)
         sources = render.render_sources(status.sources(cfg, conn, store.get_meta))
         note = _sync_note(conn, cfg)
+        eating = cfg.get("dining") or {}
+        meals = render.render_meals(dining.load(), now, eating, want=meal) if eating.get("location_id") else ""
     finally:
         conn.close()
     return render.page(schedule, now, tz, tasks, anns, note, mails=mails,
                        grades=grades, changed=changed, appts=appts,
                        week=week, workload=workload, completed=completed,
-                       focus_day=focus_day, personal=personal, sources=sources,
+                       focus_day=focus_day, personal=personal, sources=sources, meals=meals,
                        walk_minutes=cfg.get("walk_minutes", 0),
                        theme=cfg.get("theme", "light"),
                        canvas_ready=bool(cfg["canvas"]["token"]),
@@ -676,7 +678,9 @@ class Handler(BaseHTTPRequestHandler):
                     week -= timedelta(days=week.weekday())
                 elif focus:
                     week = focus - timedelta(days=focus.weekday())
-                self._send(build_page(week=week, focus_day=focus, public=self.requires_auth))
+                # A tapped meal, only ever compared with the menu's own names.
+                meal = (query.get("meal") or [""])[0][:40] or None
+                self._send(build_page(week=week, focus_day=focus, public=self.requires_auth, meal=meal))
             elif path == "/next.json":
                 self._send(json.dumps(next_meeting()), ctype="application/json")
             elif path == "/due.json":

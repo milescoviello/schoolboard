@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from schoolboard import dining, mail, server, status, store, timetable  # noqa: E402
+from schoolboard import dining, mail, render, server, status, store, timetable  # noqa: E402
 
 LA = timetable.tzinfo("America/Los_Angeles")
 SETTINGS = {"site_id": "S", "location_id": "L", "days": 3, "meal_from": {"lunch": "10:30", "dinner": "16:30"}}
@@ -227,6 +227,63 @@ class PickTest(unittest.TestCase):
         for entry in data["days"].values():
             entry["meals"][1]["stations"][0]["items"] = [{"name": "Burger", "tags": []}]
         self.assertEqual(dining.usual(data, TODAY, data["days"]["2026-09-29"]["meals"][1]), set())
+
+
+class CardTest(unittest.TestCase):
+    SETTINGS = dict(SETTINGS, name="Main Hall", url="https://dining.example.edu/menu",
+                    marks={"Vegan": "vg", "Vegetarian": "v"})
+
+    def card(self, hour, data=None, want=None, **settings):
+        now = datetime(2026, 9, 29, hour, 0, tzinfo=LA)
+        return render.render_meals(data or cached(), now, dict(self.SETTINGS, **settings), want=want)
+
+    def test_it_names_the_meal_and_the_halls_hours(self):
+        self.assertIn("<h2>Lunch</h2><span class=\"sub\">open until 8:30 pm</span>", self.card(12))
+        self.assertIn("<h2>Breakfast</h2><span class=\"sub\">opens 7:00 am</span>", self.card(6))
+        self.assertIn("<h2>Breakfast tomorrow</h2><span class=\"sub\">opens 7:00 am</span>", self.card(21))
+        self.assertIn("Squash 0", self.card(9, want="dinner"))
+
+    def test_the_other_meals_are_a_tap_away(self):
+        html = self.card(12)
+        self.assertIn('<a href="/?meal=dinner#meals" class="">Dinner</a>', html)
+        self.assertIn('<a href="/?meal=lunch#meals" class="on">Lunch</a>', html)
+        self.assertIn('id="meals"', html)
+
+    def test_the_usual_is_one_line_and_a_long_station_is_counted(self):
+        html = self.card(12)
+        self.assertIn("As usual: Salad Bar", html)
+        self.assertNotIn("Topping 3", html)
+        data = cached(days=1)
+        html = self.card(12, data)
+        self.assertIn("Topping 5", html)
+        self.assertNotIn("Topping 6", html)
+        self.assertIn("4 more", html)
+
+    def test_marks_follow_the_config_and_vegan_wins(self):
+        data = cached()
+        data["days"]["2026-09-29"]["meals"][1]["stations"][0]["items"] = [
+            {"name": "Bean Bowl", "tags": ["Vegetarian", "Vegan"]}, {"name": "Cheese Toast", "tags": ["Vegetarian"]}]
+        html = self.card(12, data)
+        self.assertIn('Bean Bowl<i class="mk" title="Vegan">vg</i>', html)
+        self.assertIn('Cheese Toast<i class="mk" title="Vegetarian">v</i>', html)
+        self.assertIn('<i class="mk">vg</i> vegan &middot; <i class="mk">v</i> vegetarian', html)
+        self.assertNotIn('class="mk"', self.card(12, data, marks={}))
+
+    def test_what_the_menu_says_is_escaped(self):
+        data = cached()
+        station = data["days"]["2026-09-29"]["meals"][1]["stations"][0]
+        station["name"] = "<b>Grill</b>"
+        station["items"] = [{"name": "<img src=x onerror=alert(1)>", "tags": []}]
+        html = self.card(12, data, url="javascript:alert(1)")
+        self.assertNotIn("<img", html)
+        self.assertNotIn("<b>Grill", html)
+        self.assertNotIn("javascript:", html)
+        self.assertIn("Main Hall menu", html)
+
+    def test_nothing_known_is_no_card_and_nothing_ahead_says_so(self):
+        self.assertEqual(render.render_meals({}, datetime(2026, 9, 29, 12, tzinfo=LA), self.SETTINGS), "")
+        later = datetime(2026, 10, 9, 12, tzinfo=LA)
+        self.assertIn("No menu from Main Hall", render.render_meals(cached(), later, self.SETTINGS))
 
 
 class SourceTest(unittest.TestCase):

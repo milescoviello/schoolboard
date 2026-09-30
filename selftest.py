@@ -65,6 +65,21 @@ def sample_rows(now):
     return rows
 
 
+def meals_at(now):
+    """The dining card at `now`, from an invented cache of today and the next
+    two days: before the doors open, each meal, after closing (tomorrow's
+    breakfast), and a menu link that must not be followed."""
+    def meal(name, i):
+        return {"name": name, "slug": name.lower(), "stations": [
+            {"name": "Grill", "items": [{"name": f"{name} {i} <i>special</i>", "tags": ["Vegan"]}]},
+            {"name": "Salad Bar", "items": [{"name": f"Topping {t}", "tags": []} for t in range(12)]}]}
+    days = {(now.date() + timedelta(days=i)).isoformat(): {
+        "hours": [[420, 1230]] if i != 1 else [], "meals": [meal(n, i) for n in ("Breakfast", "Lunch", "Dinner")]}
+        for i in range(3)}
+    settings = dict(config.DEFAULTS["dining"], url="javascript:alert(1)")
+    return render.render_meals({"days": days}, now, settings)
+
+
 def tasks_at(conn, now, tz):
     rows = list(store.upcoming(conn, now=now)) + sample_rows(now)
     rows.sort(key=lambda r: render.parse_utc(r["due_utc"]))
@@ -141,7 +156,7 @@ def main():
             now = datetime(day.year, day.month, day.day, hour, 30, tzinfo=tz)
             check(f"{day} {hour:02d}:30",
                   lambda n=now: render.page(schedule, n, tz, tasks_at(conn, n, tz), "", "t", True,
-                                            workload=workload, completed=done))
+                                            workload=workload, completed=done, meals=meals_at(n)))
 
     # Weeks either side of the term, where there is nothing to draw.
     for offset in (-6, -1, 0, 1, 6, 20):
