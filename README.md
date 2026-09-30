@@ -14,6 +14,7 @@ schoolboard serve      # the web board (sysvinit service on the mini)
 schoolboard today      # today's classes in the terminal
 schoolboard sync       # pull Canvas + ingest mail now
 schoolboard status     # config, sync state, and both clocks
+schoolboard meals      # the dining hall's menu, fetched now
 schoolboard connect --token-file FILE    # add a Canvas token
 ```
 
@@ -28,9 +29,15 @@ the dorm /19 passes unicast between clients.
 | Canvas | 15 min | assignments, quizzes, discussions, announcements |
 | Course mail | 30 min | pushed from another host; see below |
 | Academic calendar | static | NU University-Wide Academic Calendar 2026–27 |
+| Dining hall | 3 h | Founders Commons menus, three days ahead, from Dine On Campus |
 
 **Canvas** uses a personal access token. Student Hub sits behind SSO + Duo, and
 scraping a push-MFA login is fragile in a way a token is not.
+
+**Dining** is the JSON behind nudining.com/dining, which needs no login. It
+gives each day's meals but no meal times, only the hall's opening hours, so
+when the board moves from breakfast to lunch to dinner is `dining.meal_from`
+in config: a guess, and never shown as the hall's time.
 
 **Mail** is Microsoft Graph, but the OAuth credentials live on another host and
 stay there — a Graph refresh token rotates on every refresh, so two clients

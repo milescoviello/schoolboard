@@ -41,6 +41,23 @@ DEFAULTS = {
         {"course": "CS 2000", "url": "https://neu-pdi.github.io/cs2000-public-resources/"},
     ],
     "course_site_refresh_hours": 6,
+    # The dining hall's menus, from Dine On Campus (behind nudining.com/dining).
+    # Founders Commons is the all-you-care-to-eat hall; an empty location_id
+    # turns this off.
+    "dining": {
+        "name": "Founders Commons",
+        "site_id": "634871aec625af01227663fe",
+        "location_id": "63bc7c60c625afd618b45a98",
+        "url": "https://nudining.com/dining/whats-on-the-menu/founders-commons",
+        "days": 3,
+        "refresh_hours": 3,
+        # The hall is open straight through and publishes no meal times, so
+        # these are when the board moves on to the next meal: guesses, never
+        # shown as the hall's times.
+        "meal_from": {"lunch": "10:30", "dinner": "16:30"},
+        # Badges worth a mark beside a dish; the first that matches is shown.
+        "marks": {"Vegan": "vg", "Vegetarian": "v"},
+    },
     # scribe's lecture export, synced into the vault by Syncthing: deadlines said
     # in class, and each lecture's recap for the class reminder and the weekly.
     "scribe_index": "~/Notes/.scribe/index.json",

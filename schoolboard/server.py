@@ -20,7 +20,8 @@ from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import auth, canvas, config, coursesite, ics, lectures, mail, notify, render, status, store, timetable
+from . import (auth, canvas, config, coursesite, dining, ics, lectures, mail, notify, render, status, store,
+               timetable)
 
 
 _SYNC_LOCK = threading.Lock()
@@ -145,6 +146,19 @@ def _sync(cfg, schedule):
             store.set_meta(conn, "course_site_at", datetime.now(timezone.utc).isoformat())
         return f"sites: {site_note}"
 
+    def dining_part():
+        settings = cfg.get("dining") or {}
+        if not settings.get("location_id"):
+            return None
+        every = float(settings.get("refresh_hours", 3)) * 3600
+        last = store.get_meta(conn, "dining_at")
+        if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() <= every:
+            return None
+        _, note, fetched = dining.refresh(settings, datetime.now(tz).date())
+        if fetched:   # nothing reached: try again next sync
+            store.set_meta(conn, "dining_at", datetime.now(timezone.utc).isoformat())
+        return f"dining: {note}"
+
     try:
         _source(parts, "Canvas", canvas_part)
         _source(parts, "mail", mail_part)
@@ -152,6 +166,7 @@ def _sync(cfg, schedule):
         _source(parts, "lectures", lambda: lectures.collect(conn, cfg, tz) or "lectures: no scribe export yet")
         _source(parts, "calendar", calendar_part)
         _source(parts, "sites", sites_part)
+        _source(parts, "dining", dining_part)
         store.set_meta(conn, "last_sync", datetime.now().astimezone().isoformat())
         note = " · ".join(parts)
         store.set_meta(conn, "last_sync_note", note)

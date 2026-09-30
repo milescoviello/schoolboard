@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from schoolboard import auth, canvas, config, coursesite, notify, server, store, timetable  # noqa: E402
+from schoolboard import auth, canvas, config, coursesite, dining, notify, server, store, timetable  # noqa: E402
 
 
 def cmd_serve(args):
@@ -95,6 +95,33 @@ def cmd_sites(args):
     today = datetime.now(timetable.tzinfo(cfg["timezone"])).date()
     for entry in coursesite.entries_for(today):
         print(f"  today: {entry['course']} {entry['kind']} {entry['label']} {entry['url'] or ''}")
+    return 0
+
+
+def cmd_meals(args):
+    cfg = config.load_config()
+    settings = cfg.get("dining") or {}
+    if not settings.get("location_id"):
+        print("no dining hall configured (dining.location_id in config.json)")
+        return 1
+    now = datetime.now(timetable.tzinfo(cfg["timezone"]))
+    data, note, _ = dining.refresh(settings, now.date())
+    print(f"{settings.get('name') or 'dining'}: {note}")
+    pick = dining.current(data, now, settings)
+    if pick is None:
+        print("  nothing published from today on")
+        return 0
+    hours = ", ".join(f"{a.strftime('%-I:%M %p').lower()}-{b.strftime('%-I:%M %p').lower()}"
+                      for a, b in pick["spans"] or [])
+    print(f"\n{pick['day'].strftime('%A %-d %B')}" + (f", open {hours}" if hours else ""))
+    for meal in pick["meals"]:
+        print(f"{'>>' if meal is pick['meal'] else '  '} {meal['name']}")
+        usual = dining.usual(data, pick["day"], meal)
+        for station in meal["stations"]:
+            if station["name"] not in usual:
+                print(f"     {station['name']:<16} {', '.join(i['name'] for i in station['items'])}")
+        if usual:
+            print(f"     {'as usual':<16} {', '.join(s['name'] for s in meal['stations'] if s['name'] in usual)}")
     return 0
 
 
@@ -211,6 +238,7 @@ def main():
     p.set_defaults(func=cmd_notify)
 
     sub.add_parser("sites", help="refresh public course sites").set_defaults(func=cmd_sites)
+    sub.add_parser("meals", help="fetch and print the dining hall's menu").set_defaults(func=cmd_meals)
 
     p = sub.add_parser("connect", help="add a Canvas access token")
     p.add_argument("--token", help="token as a literal (visible in ps; prefer --token-file)")

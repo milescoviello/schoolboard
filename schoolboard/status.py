@@ -81,6 +81,17 @@ def sources(cfg, conn, get_meta):
         "note": "",
     })
 
+    if (cfg.get("dining") or {}).get("location_id"):
+        dining_age = _age_seconds(_file_stamp("dining.json", "fetched_at"))
+        out.append({
+            "name": "Dining",
+            "age": dining_age,
+            # Three days are cached, so a missed refresh still leaves today's
+            # menu; a whole day of them is edits and new days going unseen.
+            "stale": dining_age is not None and dining_age > 24 * 3600,
+            "note": "",
+        })
+
     if cfg.get("ics_feeds"):
         ics_age = _age_seconds(get_meta(conn, "ics_at"))
         out.append({"name": "Calendar", "age": ics_age,
